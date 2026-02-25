@@ -1,0 +1,31 @@
+{
+    "processing": {
+        "input_bucket": "HomeAssistant",
+        "output_bucket": "HomeAssistant_processed"
+    },
+    "scenarios": {
+        "setup": {
+            "base_storage_capacity_kWh": 22.4,
+            "base_charging_power_kW": 0.0,
+            "bucket": "Scenario_Bucket"
+        },
+        "8_modules_2_towers": {
+            "measurement": "Additional_8_Modules_2_Towers",
+            "extra_storage_capacity_kWh": 22.4,
+            "extra_charging_power_kW": 0.0,
+            "description": "Scenario with 8 additional modules in 2 towers"
+        },
+        "7_modules_1_tower": {
+            "measurement": "Additional_7_Modules_1_Tower",
+            "extra_storage_capacity_kWh": 19.6,
+            "extra_charging_power_kW": 12.08,
+            "description": "Scenario with 7 additional modules in 1 tower"
+        },
+        "14_modules_2_towers": {
+            "measurement": "Additional_14_Modules_2_Towers",
+            "extra_storage_capacity_kWh": 39.2,
+            "extra_charging_power_kW": 6.72,
+            "description": "Scenario with 14 additional modules in 2 towers"
+        }
+    }
+}
