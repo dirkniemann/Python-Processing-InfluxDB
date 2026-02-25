@@ -47,3 +47,5 @@ Configurae the .env. Dafür gibt es eine .env_example, die kopiert werden kann, 
 ```bash
 python main.py
 ```
+
+test
