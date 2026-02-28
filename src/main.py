@@ -1,17 +1,21 @@
-import argparse
-import json
-import sys
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import List
-from dotenv import load_dotenv
-
 #!/usr/bin/env python3
 """
 Main entry point for InfluxDB Home Assistant data analysis script.
 Handles argument parsing, configuration loading, and environment setup.
 """
 
+import argparse
+import json
+import logging
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List
+from dotenv import load_dotenv
+
+from moduls.logger_setup import get_logger
+from moduls.influxdb_handler import InfluxDBHandler
+from moduls.HomeAssistant_processing import HomeAssistantProcessor
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -33,54 +37,24 @@ def parse_arguments() -> argparse.Namespace:
         help="Execution stage (default: dev)"
     )
     
-    # Dates argument (single date, multiple dates, or 'all')
+    # Log level argument
     parser.add_argument(
-        "--dates",
+        "--log-level",
         type=str,
-        default="yesterday",
-        help="Dates to process: 'yesterday' (default), 'all', or comma-separated dates (YYYY-MM-DD)"
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="Logging level (default: DEBUG for dev/test, WARNING for prod)"
+    )
+    
+    # Custom log file argument
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Custom log file path (default: logs/app_{stage}_{timestamp}.log)"
     )
     
     return parser.parse_args()
-
-
-def validate_dates(dates_input: str) -> List[str]:
-    """
-    Validate and process date input.
-    
-    Args:
-        dates_input: User input for dates
-        
-    Returns:
-        List of validated date strings (YYYY-MM-DD format)
-        
-    Raises:
-        ValueError: If today's date is included or invalid format
-    """
-    today = datetime.now().date()
-    
-    if dates_input.lower() == "yesterday":
-        target_date = today - timedelta(days=1)
-        return [target_date.strftime("%Y-%m-%d")]
-    
-    if dates_input.lower() == "all":
-        return ["all"]
-    
-    # Parse comma-separated dates
-    date_list = []
-    for date_str in dates_input.split(","):
-        date_str = date_str.strip()
-        try:
-            parsed_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            
-            if parsed_date >= today:
-                raise ValueError(f"Date {date_str} is today or in the future. Only past dates are allowed.")
-            
-            date_list.append(date_str)
-        except ValueError as e:
-            raise ValueError(f"Invalid date format: {date_str}. Use YYYY-MM-DD format. Error: {e}")
-    
-    return date_list
 
 
 def load_configuration(stage: str) -> dict:
@@ -121,34 +95,88 @@ def main() -> int:
         Exit code
     """
     try:
+        start_time = datetime.now()
         # Parse arguments
         args = parse_arguments()
         
+        # Convert log level string to logging constant
+        log_level = None
+        if args.log_level:
+            log_level = getattr(logging, args.log_level.upper(), None)
+        
+        # Setup logger
+        logger = get_logger(
+            stage=args.stage,
+            log_level=log_level,
+            log_file=args.log_file,
+            name=__name__
+        )
+        
+        logger.info("Application started")
+        logger.info(f"Stage: {args.stage}")
+        
         # Setup environment
         setup_environment(args.stage)
+        logger.debug("Environment variables loaded")
         
         # Load configuration
         config = load_configuration(args.stage)
+        logger.debug("Configuration loaded successfully")
+        logger.debug(f"Config: {config}")
+        
+        # Initialize InfluxDB handler
+        logger.debug("Initializing InfluxDB handler...")
+        try:
+            influx_handler = InfluxDBHandler()
+            if influx_handler.connect():
+                logger.debug("InfluxDB handler connected successfully")
+                
+                # Initialize HomeAssistant processor
+                try:
+                    first_data_day = influx_handler.get_first_data_day(
+                        bucket=config["processing"]["input_bucket"],
+                    )
+                    ha_processor = HomeAssistantProcessor(
+                        influx_handler=influx_handler,
+                        processing_config=config["processing"],
+                        first_data_day=first_data_day
+                    )
+                    logger.debug("HomeAssistant processor initialized successfully")
+                    
+                    # Process data
+                    ha_processor.process_data()
 
-        # Validate and process dates
-        dates = validate_dates(args.dates)
-        
-        print(f"Stage: {args.stage}")
-        print(f"Dates: {dates}")
-        print(f"Config loaded: {config}")
-        
-        # TODO: Add main application logic here
+                except (KeyError, ValueError) as e:
+                    logger.error(f"Failed to initialize processor: {e}", exc_info=True)
+                
+                influx_handler.disconnect()
+            else:
+                logger.warning("Could not connect to InfluxDB")
+        except (ImportError, ValueError) as e:
+            logger.error(f"InfluxDB handler initialization failed: {e}")
+
+        duration = datetime.now() - start_time
+        logger.info(f"Application completed successfully. Duration: {duration}")
         
         return 0
         
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        if 'logger' in locals():
+            logger.error(f"Value Error: {e}", exc_info=True)
+        else:
+            print(f"Error: {e}", file=sys.stderr)
         return 1
     except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        if 'logger' in locals():
+            logger.error(f"File not found: {e}", exc_info=True)
+        else:
+            print(f"Error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
+        if 'logger' in locals():
+            logger.error(f"Unexpected error: {e}", exc_info=True)
+        else:
+            print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
 
