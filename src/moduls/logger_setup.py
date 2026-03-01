@@ -14,7 +14,7 @@ class LoggerSetup:
     STAGE_LOG_LEVELS = {
         "dev": logging.DEBUG,
         "test": logging.DEBUG,
-        "prod": logging.WARNING,
+        "prod": logging.INFO,
     }
     
     DEFAULT_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
