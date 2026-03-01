@@ -2,17 +2,19 @@
     "processing": {
         "input_bucket": "HomeAssistant",
         "output_bucket": "testing",
-        "version": "v1",
         "entities_to_process": {
-            "daily_aggregate": [
-                "e3_vitocal_heizung_stromverbrauch_heute",
-                "e3_vitocal_heizung_stromverbrauch_heute_2"
-            ]
+            "daily_aggregate": {
+                "version": "v4",
+                "entities": [
+                    "e3_vitocal_heizung_stromverbrauch_heute",
+                    "e3_vitocal_heizung_stromverbrauch_heute_2"
+                ]
+            }
         }
     },
     "scenarios": {
         "setup": {
-            "bucket": "Scenarios",
+            "bucket": "testing",
             "base_storage_capacity_kWh": 22.4,
             "base_charging_power_kW": 0.0
         },

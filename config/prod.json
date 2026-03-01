@@ -1,7 +1,16 @@
 {
     "processing": {
         "input_bucket": "HomeAssistant",
-        "output_bucket": "HomeAssistant_processed"
+        "output_bucket": "HomeAssistant_processed",
+        "entities_to_process": {
+            "daily_aggregate": {
+                "version": "v1",
+                "entities": [
+                    "e3_vitocal_heizung_stromverbrauch_heute",
+                    "e3_vitocal_heizung_stromverbrauch_heute_2"
+                ]
+            }
+        }
     },
     "scenarios": {
         "setup": {
