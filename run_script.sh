@@ -1,8 +1,10 @@
-#!/bin/bash -euo pipefail
+#!/bin/bash
+
+set -euo pipefail
 
 PATH=/usr/local/bin:/usr/bin:/bin
-REPO_DIR=/opt/python_auswertung_influxdb_ha
-VENV_DIR=/opt/python_auswertung_influxdb_ha/venv
+REPO_DIR=/opt/Python-Processing-InfluxDB
+VENV_DIR=/opt/Python-Processing-InfluxDB/venv
 LOG_FILE=${LOG_FILE:-/var/log/python_auswertung_run.log}
 
 # Ensure log file exists and append both stdout/stderr to it while keeping console output

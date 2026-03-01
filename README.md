@@ -84,39 +84,51 @@ Steps to run this on a Proxmox LXC (Debian/Ubuntu base):
 
 2) Get the code under /opt by cloning the repo
 - ```bash
-	mkdir -p /opt/python_auswertung_influxdb_ha
-	chown $(whoami):$(whoami) /opt/python_auswertung_influxdb_ha
+	mkdir -p /opt
 	cd /opt
 	git clone https://github.com/dirkniemann/Python-Processing-InfluxDB
-	cd /opt/python_auswertung_influxdb_ha
+	cd /opt/Python-Processing-InfluxDB
 	```
 
 3) Configure environment
 - Create `.env` in the repo root with your InfluxDB settings (see Configuration section).
+```bash
+cp .env_example .env
+nano .env
+```
 
 4) Create virtualenv and install deps
 - ```bash
-	python3 -m venv /opt/python_auswertung_influxdb_ha/venv
-	source /opt/python_auswertung_influxdb_ha/venv/bin/activate
+	python3 -m venv /opt/Python-Processing-InfluxDB/venv
+	source /opt/Python-Processing-InfluxDB/venv/bin/activate
 	pip install -r requirements.txt
 	```
 
 5) Cron setup
 - Make sure [run_script.sh](run_script.sh) is executable:
 	```bash
-	chmod +x /opt/python_auswertung_influxdb_ha/run_script.sh
+	chmod +x /opt/Python-Processing-InfluxDB/run_script.sh
 	```
-- Add the cron entry (example: daily at 04:00, with lock to avoid overlap):
+- Use the provided cron snippet [cron.d_influx_job](cron.d_influx_job):
 	```bash
-	0 4 * * * /usr/bin/flock -n /tmp/influx_job.lock /bin/bash -lc '/opt/python_auswertung_influxdb_ha/run_script.sh'
+	cp cron.d_influx_job /etc/cron.d/influx_job
+	chmod 644 /etc/cron.d/influx_job
+	systemctl reload cron   # or: service cron reload
 	```
-	You can also keep this cron line in `/etc/cron.d/influx_job` if preferred.
+	It runs daily at 04:00 and uses flock to avoid overlap:
+	```
+	0 4 * * * root /usr/bin/flock -n /tmp/influx_job.lock /bin/bash -lc '/opt/Python-Processing-InfluxDB/run_script.sh'
+	```
 
 6) Logs
 - The script writes to `/var/log/influx_job.log` via `tee`; ensure the cron user can write there (e.g., `sudo touch /var/log/influx_job.log && sudo chown $(whoami):$(whoami) /var/log/influx_job.log`).
 
 7) Manual run/test
 - ```bash
-	cd /opt/python_auswertung_influxdb_ha
+	cd /opt/Python-Processing-InfluxDB
 	./run_script.sh
 	```
+
+
+Todo:
+- MQTT versenden über Status des Skripts, log bei error mitschicken
