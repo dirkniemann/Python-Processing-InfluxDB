@@ -113,7 +113,7 @@ nano .env
 	```bash
 	cp cron.d_influx_job /etc/cron.d/influx_job
 	chmod 644 /etc/cron.d/influx_job
-	systemctl reload cron   # or: service cron reload
+	service cron reload
 	```
 	It runs daily at 04:00 and uses flock to avoid overlap:
 	```
