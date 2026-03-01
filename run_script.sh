@@ -16,9 +16,10 @@ cd "$REPO_DIR"
 
 echo "[$(date -Is)] Starting run_script"
 echo "[$(date -Is)] Pulling latest code from git repository at $REPO_DIR"
-# Pull latest code; ignore non-zero exit but note it
+# Pull latest code
 if ! git pull; then
-    echo "[$(date -Is)] Warning: git pull failed" >&2
+    echo "[$(date -Is)] Error: git pull failed" >&2
+    exit 1
 fi
 
 # Activate virtualenv
