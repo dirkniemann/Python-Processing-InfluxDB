@@ -1,0 +1,3 @@
+# Copy this file to /etc/cron.d/influx_job on the target host
+# Runs daily at 04:00 and prevents overlap via flock
+0 4 * * * root /usr/bin/flock -n /tmp/influx_job.lock /bin/bash -lc '/opt/Python-Processing-InfluxDB/run_script.sh'

@@ -1,1 +1,0 @@
-0 4 * * * /usr/bin/flock -n /tmp/influx_job.lock /bin/bash -lc '/opt/python_auswertung_influxdb_ha/run_script.sh'
