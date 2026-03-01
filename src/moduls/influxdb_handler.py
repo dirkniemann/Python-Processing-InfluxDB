@@ -38,14 +38,13 @@ def utc_to_local(utc_dt: datetime) -> datetime:
         utc_dt: UTC-aware datetime object
         
     Returns:
-        Naive datetime in local timezone (Europe/Berlin)
+        datetime aware of local timezone (Europe/Berlin)
     """
     if utc_dt.tzinfo is None:
         raise ValueError("Expected timezone-aware datetime, got naive")
     # Convert to Berlin timezone
     local_aware = utc_dt.astimezone(LOCAL_TZ)
-    # Return naive datetime (local time)
-    return local_aware.replace(tzinfo=None)
+    return local_aware
 
 
 class InfluxDBHandler:
@@ -255,27 +254,40 @@ class InfluxDBHandler:
             # If stop_time is not provided, query the whole day of start_time
             if stop_time is None:
                 actual_start = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                if actual_start.tzinfo is not None:
+                    naive_start_time = actual_start.replace(tzinfo=None)
+
+                else:
+                    naive_start_time = actual_start
+
+                actual_start = LOCAL_TZ.localize(naive_start_time)
+
                 actual_stop = actual_start + timedelta(days=1)
+                if actual_stop.tzinfo is not None:
+                    naive_stop_time = actual_stop.replace(tzinfo=None)
+
+                else:
+                    naive_stop_time = actual_stop
+
+                actual_stop = LOCAL_TZ.localize(naive_stop_time)
+
                 logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
             else:
                 actual_start = start_time
                 actual_stop = stop_time
             
-            # Convert local datetimes to UTC for Flux query
-            utc_start = local_to_utc(actual_start)
-            utc_stop = local_to_utc(actual_stop)
-            
             logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
-            logger.debug(f"UTC range: {utc_start} to {utc_stop}")
+            logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
             # Build Flux query
             query = f'''
             from(bucket: "{bucket}")
-                |> range(start: {utc_start.isoformat()}, stop: {utc_stop.isoformat()})
+                |> range(start: {actual_start.isoformat()}, stop: {actual_stop.isoformat()})
                 |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
                 |> filter(fn: (r) => r["_field"] == "{field}")
                 |> keep(columns: ["_time", "_value"])
-                |> last()
+                |> max()
                 |> limit(n: 1)
             '''
             
@@ -339,6 +351,7 @@ class InfluxDBHandler:
                 for record in table.records:
                     first_time = record.get_time()
                     local_first_time = utc_to_local(first_time)
+                    local_first_time = local_first_time.replace(hour=23, minute=59, second=59, microsecond=0)
                     logger.info(f"Found first data point in {bucket}: {local_first_time.date()}")
                     return local_first_time
             
@@ -405,6 +418,7 @@ class InfluxDBHandler:
                 for record in table.records:
                     last_time = record.get_time()
                     local_last_time = utc_to_local(last_time)
+                    local_last_time = local_last_time.replace(hour=23, minute=59, second=59, microsecond=0)
                     logger.info(f"Found last data point in {bucket}: {local_last_time.date()}")
                     return local_last_time
             return None
@@ -451,16 +465,24 @@ class InfluxDBHandler:
             )
         """
 
-        # TODO: Testen, ob die Funktion korrekt funktioniert und die Daten mit den richtigen Tags und im richtigen Format in InfluxDB geschrieben werden. Überprüfe auch die Zeitzonenbehandlung für den Timestamp.
-
         if not self.client:
             logger.error("Cannot write data: Client not connected")
             return False
         
         try:
             write_api = self.client.write_api(write_options=SYNCHRONOUS)
+            
+            # Use provided timestamp or current time
+            write_timestamp = timestamp if timestamp is not None else datetime.now()
+            
+            # If timestamp is naive, assume it's Berlin time and convert to UTC
+            if write_timestamp.tzinfo is None:
+                write_timestamp = local_to_utc(write_timestamp)
+            else:
+                write_timestamp = write_timestamp.astimezone(pytz.UTC)
+            
             point = {
-                "measurement": "home_assistant_data",
+                "measurement": "home_assistant",
                 "tags": {
                     "entity_id": entity_id,
                     "version": version or "",
@@ -470,7 +492,7 @@ class InfluxDBHandler:
                 "fields": {
                     field: value
                 },
-                "time": local_to_utc(timestamp or datetime.now())
+                "time": write_timestamp.isoformat()
             }
             logger.debug(f"Writing data point to {bucket}: {point}")
             write_api.write(bucket=bucket, org=self.org, record=point)
