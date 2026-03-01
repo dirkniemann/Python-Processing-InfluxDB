@@ -15,7 +15,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 cd "$REPO_DIR"
 
 echo "[$(date -Is)] Starting run_script"
-
+echo "[$(date -Is)] Pulling latest code from git repository at $REPO_DIR"
 # Pull latest code; ignore non-zero exit but note it
 if ! git pull; then
     echo "[$(date -Is)] Warning: git pull failed" >&2
@@ -34,6 +34,6 @@ fi
 if git diff --name-only HEAD~1..HEAD | grep -q "requirements"; then
     pip install -r requirements.txt
 fi
-
+echo "[$(date -Is)] Running main.py with stage prod"
 python src/main.py --stage prod
 echo "[$(date -Is)] Finished run_script"
