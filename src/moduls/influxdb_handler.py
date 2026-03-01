@@ -419,7 +419,7 @@ class InfluxDBHandler:
                     last_time = record.get_time()
                     local_last_time = utc_to_local(last_time)
                     local_last_time = local_last_time.replace(hour=23, minute=59, second=59, microsecond=0)
-                    logger.info(f"Found last data point in {bucket}: {local_last_time.date()}")
+                    logger.debug(f"Found last data point in {bucket}: {local_last_time.date()}")
                     return local_last_time
             return None
         except Exception as e:

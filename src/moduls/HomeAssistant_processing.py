@@ -37,10 +37,12 @@ class DailyAggregateProcessor(EntityProcessor):
         """
         Process daily aggregate entities by calculating daily sums and writing to output bucket.
         """
-        logger.debug(f"Processing {len(self.entities)} daily aggregate entities (version: {self.version})")
+        logger.info(f"Processing {len(self.entities)} daily aggregate entities (version: {self.version})")
         
         for entity_id in self.entities:
             self._process_entity(entity_id)
+            logger.info(f"Finished processing daily aggregate for {entity_id}")
+        logger.info("Completed processing all daily aggregate entities")
             
     def _process_entity(self, entity_id: str) -> None:
         """Process a single entity for daily aggregates."""
