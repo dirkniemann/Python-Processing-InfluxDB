@@ -1,0 +1,46 @@
+{
+    "processing": {
+        "input_bucket": "HomeAssistant",
+        "output_bucket": "HomeAssistant_processed",
+        "entities_to_process": {
+            "daily_aggregate": {
+                "version": "v1",
+                "entities": [
+                    "e3_vitocal_heizung_stromverbrauch_heute",
+                    "e3_vitocal_heizung_stromverbrauch_heute_2"
+                ]
+            }
+        }
+    },
+    "scenarios": {
+        "setup": {
+            "bucket": "Scenarios",
+            "base_storage_capacity_kWh": 22.4,
+            "base_charging_power_kW": 0.0
+        },
+        "8_modules_2_towers": {
+            "name": "8_modules_2_towers",
+            "measurement": "scenario",
+            "version": "v1",
+            "description": "Scenario with 8 additional modules in 2 towers",
+            "extra_storage_capacity_kWh": 22.4,
+            "extra_charging_power_kW": 0.0
+        },
+        "7_modules_1_tower": {
+            "name": "7_modules_1_tower",
+            "measurement": "scenario",
+            "version": "v1",
+            "description": "Scenario with 7 additional modules in 1 tower",
+            "extra_storage_capacity_kWh": 19.6,
+            "extra_charging_power_kW": 12.08
+        },
+        "14_modules_2_towers": {
+            "name": "14_modules_2_towers",
+            "measurement": "scenario",
+            "version": "v1",
+            "description": "Scenario with 14 additional modules in 2 towers",
+            "extra_storage_capacity_kWh": 39.2,
+            "extra_charging_power_kW": 6.72
+        }
+    }
+}
