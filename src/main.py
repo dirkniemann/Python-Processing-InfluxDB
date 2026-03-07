@@ -126,34 +126,50 @@ def main() -> int:
         
         # Initialize InfluxDB handler
         logger.debug("Initializing InfluxDB handler...")
+        influx_handler = None
         try:
             influx_handler = InfluxDBHandler()
-            if influx_handler.connect():
-                logger.debug("InfluxDB handler connected successfully")
-                
-                # Initialize HomeAssistant processor
-                try:
-                    first_data_day = influx_handler.get_first_data_day(
-                        bucket=config["processing"]["input_bucket"],
-                    )
-                    ha_processor = HomeAssistantProcessor(
-                        influx_handler=influx_handler,
-                        processing_config=config["processing"],
-                        first_data_day=first_data_day
-                    )
-                    logger.debug("HomeAssistant processor initialized successfully")
-                    
-                    # Process data
-                    ha_processor.process_data()
+            if not influx_handler.connect():
+                logger.error("Could not connect to InfluxDB")
+                return 1
 
-                except (KeyError, ValueError) as e:
-                    logger.error(f"Failed to initialize processor: {e}", exc_info=True)
-                
-                influx_handler.disconnect()
-            else:
-                logger.warning("Could not connect to InfluxDB")
+            logger.info("InfluxDB handler connected successfully")
+
+            # Get first data day (hard-stop if unavailable)
+            try:
+                first_data_day = influx_handler.get_first_data_day(
+                    bucket=config["processing"]["input_bucket"],
+                )
+            except Exception as e:
+                logger.error(f"Failed to retrieve first data day: {e}", exc_info=True)
+                return 1
+
+            if first_data_day is None:
+                logger.error("No data available in input bucket; aborting run")
+                return 1
+
+            # Initialize HomeAssistant processor
+            try:
+                ha_processor = HomeAssistantProcessor(
+                    influx_handler=influx_handler,
+                    processing_config=config["processing"],
+                    first_data_day=first_data_day
+                )
+                logger.debug("HomeAssistant processor initialized successfully")
+
+                # Process data
+                ha_processor.process_data()
+
+            except (KeyError, ValueError) as e:
+                logger.error(f"Failed to initialize processor: {e}", exc_info=True)
+                return 1
+
         except (ImportError, ValueError) as e:
             logger.error(f"InfluxDB handler initialization failed: {e}")
+            return 1
+        finally:
+            if influx_handler:
+                influx_handler.disconnect()
 
         duration = datetime.now() - start_time
         logger.info(f"Application completed successfully. Duration: {duration}")

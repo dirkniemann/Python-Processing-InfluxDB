@@ -90,6 +90,9 @@ class InfluxDBHandler:
                 f"Set them as environment variables or pass as arguments."
             )
         
+        # Allow raising the client timeout via env (ms). Default stays close to library default (~10s)
+        self.timeout_ms = int(os.getenv("INFLUX_TIMEOUT_MS", "100000"))
+
         self.client: Optional[InfluxDBClient] = None
         logger.debug(f"InfluxDB handler initialized with URL: {self.url}, Org: {self.org}")
     
@@ -101,7 +104,7 @@ class InfluxDBHandler:
             True if connection successful, False otherwise
         """
         try:
-            self.client = InfluxDBClient(url=self.url, token=self.token, org=self.org)
+            self.client = InfluxDBClient(url=self.url, token=self.token, org=self.org, timeout=self.timeout_ms)
             # Test connection by fetching health
             health = self.client.health()
             logger.debug(f"Successfully connected to InfluxDB: {health.message}")
