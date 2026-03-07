@@ -18,6 +18,7 @@ class LoggerSetup:
     }
     
     DEFAULT_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+    PROD_LOG_DIR = Path("/var/log/Python_Auswertung")
     LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
     
@@ -39,7 +40,16 @@ class LoggerSetup:
         self.stage = stage
         self.log_level = log_level or self.STAGE_LOG_LEVELS.get(stage, logging.WARNING)
         self.log_file = log_file
+        self.log_dir = self._select_log_dir()
         self.logger = None
+
+    def _select_log_dir(self) -> Path:
+        """
+        Select log directory based on stage (prod -> /var/log/Python_Auswertung).
+        """
+        if self.stage == "prod":
+            return self.PROD_LOG_DIR
+        return self.DEFAULT_LOG_DIR
     
     def _get_log_file_path(self) -> Path:
         """
@@ -52,12 +62,16 @@ class LoggerSetup:
             return Path(self.log_file)
         
         # Create logs directory if it doesn't exist
-        self.DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # In prod we must write logs; surface a clear failure to the caller
+            raise RuntimeError(f"Unable to create log directory {self.log_dir}: {e}")
         
         # Generate filename with current timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{timestamp}.log"
-        return self.DEFAULT_LOG_DIR / filename
+        return self.log_dir / filename
     
     def _create_console_handler(self) -> logging.StreamHandler:
         """
@@ -95,7 +109,7 @@ class LoggerSetup:
         Args:
             max_age_days: Maximum age of log files in days (default: 30)
         """
-        if not self.DEFAULT_LOG_DIR.exists():
+        if not self.log_dir.exists():
             return
         
         try:
@@ -104,7 +118,7 @@ class LoggerSetup:
             deleted_files = []
             
             # Find all .log files in the log directory
-            for log_file in self.DEFAULT_LOG_DIR.glob("*.log"):
+            for log_file in self.log_dir.glob("*.log"):
                 try:
                     # Extract timestamp from filename (format: YYYYMMDD_HHMMSS.log)
                     filename = log_file.stem  # filename without extension

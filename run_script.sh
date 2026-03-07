@@ -5,7 +5,7 @@ set -euo pipefail
 PATH=/usr/local/bin:/usr/bin:/bin
 REPO_DIR=/opt/Python-Processing-InfluxDB
 VENV_DIR=/opt/Python-Processing-InfluxDB/venv
-LOG_FILE=${LOG_FILE:-/var/log/python_auswertung_run.log}
+LOG_FILE=${LOG_FILE:-/var/log/Python_Auswertung/cronjob/cronjob.log}
 
 # Ensure log file exists and append both stdout/stderr to it while keeping console output
 mkdir -p "$(dirname "$LOG_FILE")"
