@@ -132,3 +132,4 @@ nano .env
 
 Todo:
 - MQTT versenden über Status des Skripts, log bei error mitschicken
+- in testing löschen, und dann Wärmpepumpen Statisitk testen

@@ -9,6 +9,16 @@
                     "e3_vitocal_heizung_stromverbrauch_heute",
                     "e3_vitocal_heizung_stromverbrauch_heute_2"
                 ]
+            },
+            "Waermepumpe_statistik": {
+                "version": "v2",
+                "entities": [
+                    "e3_vitocal_heizung_stromverbrauch_heute",
+                    "e3_vitocal_heizung_stromverbrauch_heute_2",
+                    "fems_gridactivepower"
+                ],
+                "output_measurement": "Waermepumpe_statistik",
+                "output_entity_id": "Waermepumpe_statistik"
             }
         }
     },
