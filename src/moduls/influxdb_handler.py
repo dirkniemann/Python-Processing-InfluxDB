@@ -139,7 +139,8 @@ class InfluxDBHandler:
         bucket: str,
         entity_id: str,
         stop_time: Optional[datetime] = None,
-        field: str = "value"
+        field: str = "value",
+        measurement: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieve all data points for a specific time range, entity, and field.
@@ -198,12 +199,15 @@ class InfluxDBHandler:
             logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
             logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
+            measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
+
             # Build Flux query with UTC timestamps
             query = f'''
             from(bucket: "{bucket}")
                 |> range(start: {actual_start.isoformat()}, stop: {actual_stop.isoformat()})
                 |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
                 |> filter(fn: (r) => r["_field"] == "{field}")
+                {measurement_filter}
                 |> keep(columns: ["_time", "_value"])
             '''
             
@@ -231,7 +235,7 @@ class InfluxDBHandler:
             
         except Exception as e:
             logger.error(f"Error querying data: {e}", exc_info=True)
-            return []
+            raise RuntimeError(f"Error querying data: {e}")
         
     def get_last_datapoint(
         self,
@@ -239,7 +243,8 @@ class InfluxDBHandler:
         bucket: str,
         entity_id: str,
         stop_time: Optional[datetime] = None,
-        field: str = "value"
+        field: str = "value",
+        measurement: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieve the last data point for a specific time range, entity, and field.
@@ -298,12 +303,15 @@ class InfluxDBHandler:
             logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
             logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
+            measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
+
             # Build Flux query
             query = f'''
             from(bucket: "{bucket}")
                 |> range(start: {actual_start.isoformat()}, stop: {actual_stop.isoformat()})
                 |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
                 |> filter(fn: (r) => r["_field"] == "{field}")
+                {measurement_filter}
                 |> keep(columns: ["_time", "_value"])
                 |> max()
                 |> limit(n: 1)
@@ -533,7 +541,64 @@ class InfluxDBHandler:
             raise RuntimeError(f"Error writing data point: {e}")
         
 
+    def get_available_versions(
+        self,
+        bucket: str,
+        scenario: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        measurement: Optional[str] = None,
+        field: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get a list of available version tags in the bucket, optionally filtered by scenario and entity_id.
+        Args:
+            bucket: Bucket to check for versions
+            scenario: Optional scenario tag to filter by
+            entity_id: Optional entity_id to filter by
+            measurement: Optional measurement to filter by
+            field: Optional field to filter by
+        Returns:
+            List of unique version tags found in the bucket
+        """
+        if not self.client:
+            logger.error("Cannot query data: Client not connected")
+            return []
+        
+        try:
+            scenario_filter = f'|> filter(fn: (r) => r["scenario"] == "{scenario}")' if scenario else ""
+            entity_filter = f'|> filter(fn: (r) => r["entity_id"] == "{entity_id}")' if entity_id else ""
+            measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
+            field_filter = f'|> filter(fn: (r) => r["_field"] == "{field}")' if field else ""
 
+            query = f'''
+            from(bucket: "{bucket}")
+                |> range(start: 0)
+                {scenario_filter}
+                {entity_filter}
+                {measurement_filter}
+                {field_filter}
+                |> keep(columns: ["version"])
+                |> group()
+                |> distinct(column: "version")
+            '''
+            logger.debug(f"Querying available versions with:\n{query}")
+            query_api = self.client.query_api()
+            tables = query_api.query(query, org=self.org)
+            
+            versions = set()
+            for table in tables:
+                for record in table.records:
+                    version = record.get_value()
+                    if version:
+                        versions.add(version)
+            
+            version_list = sorted(versions)
+            logger.debug(f"Available versions in {bucket}: {version_list}")
+            return version_list
+        except Exception as e:
+            logger.error(f"Error querying available versions: {e}", exc_info=True)
+            return []
+        
     def __enter__(self):
         """Context manager entry."""
         self.connect()

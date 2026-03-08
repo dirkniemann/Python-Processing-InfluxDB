@@ -1,8 +1,16 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.influxdb_handler import LOCAL_TZ
+
+if TYPE_CHECKING:
+    from moduls.daily_aggregate_processor import DailyAggregateProcessor
+    from moduls.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
+    from moduls.fix_waermepumpe_stromverbrauch_processor import (
+        FixWaermepumpeStromverbrauchProcessor,
+    )
+
 logger = logging.getLogger(__name__)
 
 def get_days_to_process(last_data_day: datetime) -> List[datetime]:
@@ -27,6 +35,7 @@ def get_days_to_process(last_data_day: datetime) -> List[datetime]:
         current_day += timedelta(days=1)
         
     return days_to_process
+
 class EntityProcessor:
     """Base class for entity processing strategies."""
     
@@ -53,234 +62,6 @@ class EntityProcessor:
     def process(self) -> None:
         """Process entities according to the strategy."""
         raise NotImplementedError("Subclasses must implement process()")
-
-class WaermepumpeStatistikProcessor(EntityProcessor):
-    """Processor for heat pump statistics entities."""
-    
-    def process(self) -> None:
-        """
-
-        """
-        logger.info(f"Processing {len(self.entities)} heat pump statistic entities (version: {self.version})")
-        
-        last_data_day = self.influx_handler.get_last_data_day(
-            bucket=self.output_bucket,
-            entity_id=self.output_entity_id,
-            version=self.version,
-            field="pv_contribution",
-            measurement=self.output_measurement
-        )
-
-        if not last_data_day:
-            logger.debug(f"No existing data for {self.output_entity_id} in output bucket, starting from first data day")
-            last_data_day = self.first_data_day - timedelta(days=1)
-
-        days_to_process = get_days_to_process(last_data_day)
-        
-        if not days_to_process:
-            logger.warning(f"No days to process for {self.output_entity_id}")
-            return
-        
-        logger.debug(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
-        
-        for day in days_to_process:
-            self._process_day(day)
-
-    def _process_day(self, day: datetime) -> None:
-        """
-
-        """
-        logger.debug(f"Processing day {day.date()} for heat pump statistics")
-        grid_active_power = self.influx_handler.get_data(day, self.input_bucket, self.entities[2])
-
-        sum_pv = {entity: {"values": 0.0} for entity in self.entities[:2]}
-        sum_grid_import = {entity: {"values": 0.0} for entity in self.entities[:2]}
-        for pump_entity in self.entities[:2]:
-            pump_data = self.influx_handler.get_data(day, self.input_bucket, pump_entity)
-
-            for idx, record in enumerate(pump_data):
-                if idx == 0:
-                    start_value = 0
-                    start_time = day.replace(hour=0, minute=0, second=0, microsecond=0)
-                else:
-                    start_value= pump_data[idx - 1].get("value")
-                    start_time = pump_data[idx - 1].get("time")
-
-                stop_value = record.get("value")
-                stop_time = record.get("time")
-                kWh_diff = stop_value - start_value
-                import_kwh = 0.0
-
-                for grid_idx, grid_record in enumerate(grid_active_power):
-                    grid_start_time = (
-                        day.replace(hour=0, minute=0, second=0, microsecond=0)
-                        if grid_idx == 0
-                        else grid_active_power[grid_idx - 1].get("time")
-                    )
-                    grid_stop_time = grid_record.get("time")
-
-                    if grid_start_time >= stop_time:
-                        break
-                    if grid_stop_time <= start_time:
-                        continue
-
-                    duration_hours = (grid_stop_time - grid_start_time).total_seconds() / 3600.0
-                    if duration_hours <= 0:
-                        continue
-
-                    power_w = grid_record.get("value", 0)
-                    energy_kwh = (power_w * duration_hours) / 1000.0
-
-                    if power_w >= 0:
-                        import_kwh += energy_kwh
-                if import_kwh == 0:
-                    waermepumpe_pv = kWh_diff
-                    waermepumpe_grid = 0.0
-                elif import_kwh > 0:
-                    waermepumpe_pv = max(0, kWh_diff - import_kwh)
-                    waermepumpe_grid = kWh_diff - waermepumpe_pv
-                else:
-                    logger.warning(f"Unexpected negative import_kwh value: {import_kwh} for {pump_entity} on {day.date()}")
-
-                self.influx_handler.write_datapoint(
-                    bucket=self.output_bucket,
-                    measurement=self.output_measurement,
-                    entity_id=pump_entity,
-                    version=self.version,
-                    field="pv_contribution",
-                    unit="kWh",
-                    value=waermepumpe_pv,
-                    timestamp=stop_time
-                )
-                self.influx_handler.write_datapoint(
-                    bucket=self.output_bucket,
-                    measurement=self.output_measurement,
-                    entity_id=pump_entity,
-                    version=self.version,
-                    field="grid_import",
-                    unit="kWh",
-                    value=waermepumpe_grid,
-                    timestamp=stop_time
-                )
-
-                sum_pv[pump_entity]["values"] += waermepumpe_pv
-                sum_grid_import[pump_entity]["values"] += waermepumpe_grid
-            
-            day = day.replace(hour=23, minute=59, second=59, microsecond=0)
-
-            self.influx_handler.write_datapoint(
-                bucket=self.output_bucket,
-                measurement=self.output_measurement,
-                entity_id=pump_entity,
-                version=self.version,
-                field="daily_pv",
-                unit="kWh",
-                value=float(sum_pv[pump_entity]["values"]),
-                timestamp=day
-            )
-            self.influx_handler.write_datapoint(
-                bucket=self.output_bucket,
-                measurement=self.output_measurement,
-                entity_id=pump_entity,
-                version=self.version,
-                field="daily_grid_import",
-                unit="kWh",
-                value=sum_grid_import[pump_entity]["values"],
-                timestamp=day
-            )
-        sum_pv_total = float(sum(sum_pv[pump_entity]["values"] for pump_entity in sum_pv))
-        sum_grid_import_total = float(sum(sum_grid_import[pump_entity]["values"] for pump_entity in sum_grid_import))
-        self.influx_handler.write_datapoint(
-            bucket=self.output_bucket,
-            measurement=self.output_measurement,
-            entity_id=self.output_entity_id,
-            version=self.version,
-            field="daily_sum_pv",
-            unit="kWh",
-            value=sum_pv_total,
-            timestamp=day
-        )
-        self.influx_handler.write_datapoint(
-            bucket=self.output_bucket,
-            measurement=self.output_measurement,
-            entity_id=self.output_entity_id,
-            version=self.version,
-            field="daily_sum_grid_import",
-            unit="kWh",
-            value=sum_grid_import_total,
-            timestamp=day
-        )
-
-
-class DailyAggregateProcessor(EntityProcessor):
-    """Processor for daily aggregate entities."""
-            
-    def process(self) -> None:
-        """
-        Process daily aggregate entities by calculating daily sums and writing to output bucket.
-        """
-        logger.info(f"Processing {len(self.entities)} daily aggregate entities (version: {self.version})")
-
-        last_data_day = self.influx_handler.get_last_data_day(
-            bucket=self.output_bucket,
-            entity_id=self.output_entity_id,
-            field="daily_sum",
-            version=self.version,
-            measurement=self.output_measurement
-        )
-
-        if not last_data_day:
-            logger.debug(f"No existing data for {self.output_entity_id} in output bucket, starting from first data day")
-            last_data_day = self.first_data_day - timedelta(days=1)
-
-        days_to_process = get_days_to_process(last_data_day)
-        
-        if not days_to_process:
-            logger.warning(f"No days to process for the daily aggregate entities")
-            return
-        
-        for day in days_to_process:
-            self._process_day(day)
-    
-    def _process_day(self, day: datetime) -> None:
-        """Process a single day for an entity."""
-        sum_value = 0.0
-
-        for entity_id in self.entities:
-            day_data = self.influx_handler.get_last_datapoint(
-                start_time=day,
-                bucket=self.input_bucket,
-                entity_id=entity_id,
-                field="value"
-            )
-            
-            if day_data is not None:
-                sum_value += day_data["value"]
-                self.influx_handler.write_datapoint(
-                    bucket=self.output_bucket,
-                    entity_id=entity_id,
-                    version=self.version,
-                    field="daily_sum",
-                    unit="kWh",
-                    value=day_data["value"],
-                    timestamp=day,
-                    measurement=self.output_measurement
-                )
-                logger.debug(f"Processed daily aggregate for {entity_id} on {day.date()}: {day_data}")
-            else:
-                logger.warning(f"No data found for {entity_id} on {day.date()}, skipping")
-
-        self.influx_handler.write_datapoint(
-            bucket=self.output_bucket,
-            entity_id=self.output_entity_id,
-            version=self.version,
-            field="daily_sum",
-            unit="kWh",
-            value=sum_value,
-            timestamp=day,
-            measurement=self.output_measurement
-        )
-
 
 class HomeAssistantProcessor:
     """
@@ -324,7 +105,9 @@ class HomeAssistantProcessor:
         if not isinstance(entities_to_process, dict):
             raise ValueError("'entities_to_process' must be a dictionary")
         
-        # Initialize daily aggregate processor if configured
+        if "fix_waermepumpe_stromverbrauch" in entities_to_process:
+            self._init_fix_waermepumpe_stromverbrauch_processor(entities_to_process["fix_waermepumpe_stromverbrauch"])
+
         if "daily_aggregate" in entities_to_process:
             self._init_daily_aggregate_processor(entities_to_process["daily_aggregate"])
         
@@ -336,8 +119,50 @@ class HomeAssistantProcessor:
             f"Output: {self.output_bucket}, Processors: {len(self.processors)}"
         )
     
+    def _init_fix_waermepumpe_stromverbrauch_processor(self, config: Dict[str, Any]) -> None:
+        """Initialize the fix_waermepumpe_stromverbrauch processor from config."""
+        from moduls.fix_waermepumpe_stromverbrauch_processor import FixWaermepumpeStromverbrauchProcessor
+
+        if not isinstance(config, dict):
+            raise ValueError("'fix_waermepumpe_stromverbrauch' config must be a dictionary")
+        
+        version = config.get("version")
+        if not version:
+            raise ValueError("'fix_waermepumpe_stromverbrauch' config must include 'version'")
+        
+        entities = config.get("entities", [])
+        if not isinstance(entities, list):
+            raise ValueError("'fix_waermepumpe_stromverbrauch.entities' must be a list")
+        
+        # Filter valid entities
+        valid_entities = [
+            entity for entity in entities 
+            if isinstance(entity, str) and entity.strip()
+        ]
+
+        output_measurement = config.get("output_measurement")
+        if not output_measurement or not isinstance(output_measurement, str):
+            raise ValueError("'fix_waermepumpe_stromverbrauch' config must include a valid 'output_measurement'")
+
+        if valid_entities:
+            processor = FixWaermepumpeStromverbrauchProcessor(
+                influx_handler=self.influx_handler,
+                input_bucket=self.input_bucket,
+                output_bucket=self.output_bucket,
+                version=version,
+                entities=valid_entities,
+                first_data_day=self.first_data_day,
+                output_measurement=output_measurement,
+            )
+            self.processors.append(processor)
+
+        else:
+            logger.warning("No valid entities found for fix_waermepumpe_stromverbrauch processor")
+
     def _init_daily_aggregate_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the daily aggregate processor from config."""
+        from moduls.daily_aggregate_processor import DailyAggregateProcessor
+
         if not isinstance(config, dict):
             raise ValueError("'daily_aggregate' config must be a dictionary")
         
@@ -381,6 +206,8 @@ class HomeAssistantProcessor:
 
     def _init_waermepumpe_statistik_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the Waermepumpe_statistik processor from config."""
+        from moduls.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
+
         if not isinstance(config, dict):
             raise ValueError("'Waermepumpe_statistik' config must be a dictionary")
         
@@ -434,5 +261,6 @@ class HomeAssistantProcessor:
                 processor.process()
             except Exception as e:
                 logger.error(f"Error in processor {processor.__class__.__name__}: {e}", exc_info=True)
+                raise RuntimeError(f"Processing failed in {processor.__class__.__name__}") from e
         
         logger.info("Data processing completed.")
