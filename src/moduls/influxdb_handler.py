@@ -352,8 +352,6 @@ class InfluxDBHandler:
             return None
         
         try:
-            # No data in processed bucket, check raw data bucket for first data point
-            logger.info(f"No data found in {bucket}, checking {bucket} for first data point")
             
             query_first = f'''
             from(bucket: "{bucket}")
@@ -386,7 +384,8 @@ class InfluxDBHandler:
         version: str,
         scenario: Optional[str] = None,
         entity_id: Optional[str] = None,
-        measurement: Optional[str] = None
+        measurement: Optional[str] = None,
+        field: Optional[str] = None
     ) -> Optional[datetime]:
         """
         Get the last day with data points for a specific version tag.
@@ -416,7 +415,7 @@ class InfluxDBHandler:
             scenario_filter = f'|> filter(fn: (r) => r["scenario"] == "{scenario}")' if scenario else ""
             entity_filter = f'|> filter(fn: (r) => r["entity_id"] == "{entity_id}")' if entity_id else ""
             measurement_filter = f'|> filter(fn: (r) => r["measurement"] == "{measurement}")' if measurement else ""
-
+            field_filter = f'|> filter(fn: (r) => r["field"] == "{field}")' if field else ""
             # Try to get the last data point from processed bucket
             query_last = f'''
             from(bucket: "{bucket}")
@@ -425,6 +424,7 @@ class InfluxDBHandler:
                 {scenario_filter}
                 {entity_filter}
                 {measurement_filter}
+                {field_filter}
                 |> last()
                 |> limit(n: 1)
             '''
