@@ -89,7 +89,11 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
                         second_reset_idx = len(day_data) - 1
                     else:
                         # Coudlnt find a second reset so we assume that the last record is the second reset and adjust the time to the end of the day
-                        logger.warning(f"Could not find a second reset for {entity_id} on {day.date()}! The last datapoint is {day_data[-1].get("value")} at {day_data[-1].get("time")}! Moving it to the end of the day.")
+                        logger.warning(
+                            f"Could not find a second reset for {entity_id} on {day.date()}! "
+                            f"The last datapoint is {day_data[-1].get('value')} at {day_data[-1].get('time')}! "
+                            "Moving it to the end of the day."
+                        )
                         second_reset_idx = len(day_data) - 1
 
                 if first_reset_idx is None:
