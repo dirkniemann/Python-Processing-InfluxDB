@@ -172,23 +172,36 @@ class InfluxDBHandler:
             # If stop_time is not provided, query the whole day of start_time
             if stop_time is None:
                 actual_start = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                if actual_start.tzinfo is not None:
+                    naive_start_time = actual_start.replace(tzinfo=None)
+
+                else:
+                    naive_start_time = actual_start
+
+                actual_start = LOCAL_TZ.localize(naive_start_time)
+
                 actual_stop = actual_start + timedelta(days=1)
+                if actual_stop.tzinfo is not None:
+                    naive_stop_time = actual_stop.replace(tzinfo=None)
+
+                else:
+                    naive_stop_time = actual_stop
+
+                actual_stop = LOCAL_TZ.localize(naive_stop_time)
+
                 logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
             else:
                 actual_start = start_time
                 actual_stop = stop_time
             
-            # Convert local datetimes to UTC for Flux query
-            utc_start = local_to_utc(actual_start)
-            utc_stop = local_to_utc(actual_stop)
-            
             logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
-            logger.debug(f"UTC range: {utc_start} to {utc_stop}")
+            logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
             # Build Flux query with UTC timestamps
             query = f'''
             from(bucket: "{bucket}")
-                |> range(start: {utc_start.isoformat()}, stop: {utc_stop.isoformat()})
+                |> range(start: {actual_start.isoformat()}, stop: {actual_stop.isoformat()})
                 |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
                 |> filter(fn: (r) => r["_field"] == "{field}")
                 |> keep(columns: ["_time", "_value"])
@@ -210,6 +223,8 @@ class InfluxDBHandler:
                         "time": local_time,
                         "value": record.get_value()
                     })
+
+            results.sort(key=lambda r: r["time"])
             
             logger.debug(f"Retrieved {len(results)} data points for {entity_id} from {actual_start} to {actual_stop}")
             return results
@@ -370,7 +385,8 @@ class InfluxDBHandler:
         bucket: str,
         version: str,
         scenario: Optional[str] = None,
-        entity_id: Optional[str] = None
+        entity_id: Optional[str] = None,
+        measurement: Optional[str] = None
     ) -> Optional[datetime]:
         """
         Get the last day with data points for a specific version tag.
@@ -399,6 +415,8 @@ class InfluxDBHandler:
             # Build filter for scenario if provided
             scenario_filter = f'|> filter(fn: (r) => r["scenario"] == "{scenario}")' if scenario else ""
             entity_filter = f'|> filter(fn: (r) => r["entity_id"] == "{entity_id}")' if entity_id else ""
+            measurement_filter = f'|> filter(fn: (r) => r["measurement"] == "{measurement}")' if measurement else ""
+
             # Try to get the last data point from processed bucket
             query_last = f'''
             from(bucket: "{bucket}")
@@ -406,6 +424,7 @@ class InfluxDBHandler:
                 |> filter(fn: (r) => r["version"] == "{version}")
                 {scenario_filter}
                 {entity_filter}
+                {measurement_filter}
                 |> last()
                 |> limit(n: 1)
             '''
@@ -432,12 +451,13 @@ class InfluxDBHandler:
         self,
         bucket: str,
         entity_id: str,
-        field: str,
         value: Any,
+        field: Optional[str] = "value",
         version: Optional[str] = None,
         scenario: Optional[str] = None,
         unit: Optional[str] = None,
-        timestamp: Optional[datetime] = None
+        timestamp: Optional[datetime] = None,
+        measurement: Optional[str] = "home_assistant"
     ) -> bool:
         """
         Write a single data point to InfluxDB.
@@ -453,7 +473,10 @@ class InfluxDBHandler:
             timestamp: Optional timestamp for the data point. If None, current time is used
 
         Returns:
-            True if write successful, False otherwise
+            True if write successful
+
+        Raises:
+            RuntimeError: If client is not connected or write fails
 
         Example:
             handler.write_datapoint(
@@ -469,8 +492,9 @@ class InfluxDBHandler:
         """
 
         if not self.client:
-            logger.error("Cannot write data: Client not connected")
-            return False
+            message = "Cannot write data: Client not connected"
+            logger.error(message)
+            raise RuntimeError(message)
         
         try:
             write_api = self.client.write_api(write_options=SYNCHRONOUS)
@@ -484,8 +508,11 @@ class InfluxDBHandler:
             else:
                 write_timestamp = write_timestamp.astimezone(pytz.UTC)
             
+            # Normalize numeric values to float to avoid field type conflicts in InfluxDB
+            normalized_value = float(value) if isinstance(value, (int, float)) else value
+
             point = {
-                "measurement": "home_assistant",
+                "measurement": measurement,
                 "tags": {
                     "entity_id": entity_id,
                     "version": version or "",
@@ -493,7 +520,7 @@ class InfluxDBHandler:
                     "unit": unit or ""
                 },
                 "fields": {
-                    field: value
+                    field: normalized_value
                 },
                 "time": write_timestamp.isoformat()
             }
@@ -503,7 +530,7 @@ class InfluxDBHandler:
             return True
         except Exception as e:
             logger.error(f"Error writing data point: {e}", exc_info=True)
-            return False
+            raise RuntimeError(f"Error writing data point: {e}")
         
 
 
