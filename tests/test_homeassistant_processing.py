@@ -15,7 +15,8 @@ def test_homeassistant_processor_processes_daily_aggregate(fake_influx_module, p
     # Track writes
     writes = []
     handler.write_datapoint = lambda **kwargs: writes.append(kwargs) or True
-    handler.get_last_data_day = lambda bucket, entity_id, version=None, scenario=None: None
+    # Accept optional measurement/field kwargs to mirror the real signature
+    handler.get_last_data_day = lambda bucket, entity_id, version=None, scenario=None, **_: None
     handler.get_last_datapoint = lambda start_time, bucket, entity_id, field="value": {"value": 2}
 
     first_data_day = handler_module.LOCAL_TZ.localize(datetime(2024, 1, 1))

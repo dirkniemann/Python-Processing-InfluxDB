@@ -66,7 +66,9 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
         last_data_day = self.influx_handler.get_last_data_day(
             bucket=self.output_bucket,
             entity_id=self.output_entity_id,
-            version=self.version
+            version=self.version,
+            field="pv_contribution",
+            measurement=self.output_measurement
         )
 
         if not last_data_day:
@@ -76,7 +78,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
         days_to_process = get_days_to_process(last_data_day)
         
         if not days_to_process:
-            logger.debug(f"No days to process for {self.output_entity_id}")
+            logger.warning(f"No days to process for {self.output_entity_id}")
             return
         
         logger.debug(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
@@ -93,8 +95,6 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
 
         sum_pv = {entity: {"values": 0.0} for entity in self.entities[:2]}
         sum_grid_import = {entity: {"values": 0.0} for entity in self.entities[:2]}
-        if day == datetime(2025, 3, 18, tzinfo=LOCAL_TZ):
-            logger.debug("Processing day with DST change: March 18, 2025")
         for pump_entity in self.entities[:2]:
             pump_data = self.influx_handler.get_data(day, self.input_bucket, pump_entity)
 
@@ -223,19 +223,20 @@ class DailyAggregateProcessor(EntityProcessor):
 
         last_data_day = self.influx_handler.get_last_data_day(
             bucket=self.output_bucket,
-            entity_id=self.entities[0],
+            entity_id=self.output_entity_id,
+            field="daily_sum",
             version=self.version,
             measurement=self.output_measurement
         )
 
         if not last_data_day:
-            logger.debug(f"No existing data for {self.entities[0]} in output bucket, starting from first data day")
+            logger.debug(f"No existing data for {self.output_entity_id} in output bucket, starting from first data day")
             last_data_day = self.first_data_day - timedelta(days=1)
 
         days_to_process = get_days_to_process(last_data_day)
         
         if not days_to_process:
-            logger.debug(f"No days to process for the daily aggregate entities")
+            logger.warning(f"No days to process for the daily aggregate entities")
             return
         
         for day in days_to_process:
