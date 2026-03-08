@@ -4,21 +4,23 @@
         "output_bucket": "testing",
         "entities_to_process": {
             "daily_aggregate": {
-                "version": "v4",
+                "output_measurement": "Waermepumpe_statistik",
+                "output_entity_id": "Gesamt",
+                "version": "v1",
                 "entities": [
                     "e3_vitocal_heizung_stromverbrauch_heute",
                     "e3_vitocal_heizung_stromverbrauch_heute_2"
                 ]
             },
             "Waermepumpe_statistik": {
-                "version": "v2",
+                "version": "v1",
                 "entities": [
                     "e3_vitocal_heizung_stromverbrauch_heute",
                     "e3_vitocal_heizung_stromverbrauch_heute_2",
                     "fems_gridactivepower"
                 ],
                 "output_measurement": "Waermepumpe_statistik",
-                "output_entity_id": "Waermepumpe_statistik"
+                "output_entity_id": "Gesamt"
             }
         }
     },
