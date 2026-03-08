@@ -3,6 +3,14 @@
         "input_bucket": "HomeAssistant",
         "output_bucket": "HomeAssistant_processed",
         "entities_to_process": {
+            "fix_waermepumpe_stromverbrauch": {
+                "version": "v1",
+                "output_measurement": "fix_waermepumpe_stromverbrauch",
+                "entities": [
+                    "e3_vitocal_heizung_stromverbrauch_heute",
+                    "e3_vitocal_heizung_stromverbrauch_heute_2"
+                ]
+            },
             "daily_aggregate": {
                 "output_measurement": "Waermepumpe_statistik",
                 "output_entity_id": "Gesamt",
@@ -14,21 +22,21 @@
             },
             "Waermepumpe_statistik": {
                 "version": "v1",
+                "output_measurement": "Waermepumpe_statistik",
+                "output_entity_id": "Gesamt",
                 "entities": [
                     "e3_vitocal_heizung_stromverbrauch_heute",
                     "e3_vitocal_heizung_stromverbrauch_heute_2",
                     "fems_gridactivepower"
-                ],
-                "output_measurement": "Waermepumpe_statistik",
-                "output_entity_id": "Gesamt"
+                ]
             }
         }
     },
     "scenarios": {
         "setup": {
-            "bucket": "Scenarios",
+            "bucket": "testing",
             "base_storage_capacity_kWh": 22.4,
-            "base_charging_power_kW": 0.0
+            "base_charging_power_kW": 17.92
         },
         "8_modules_2_towers": {
             "name": "8_modules_2_towers",
