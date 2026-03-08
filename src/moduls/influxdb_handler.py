@@ -414,8 +414,8 @@ class InfluxDBHandler:
             # Build filter for scenario if provided
             scenario_filter = f'|> filter(fn: (r) => r["scenario"] == "{scenario}")' if scenario else ""
             entity_filter = f'|> filter(fn: (r) => r["entity_id"] == "{entity_id}")' if entity_id else ""
-            measurement_filter = f'|> filter(fn: (r) => r["measurement"] == "{measurement}")' if measurement else ""
-            field_filter = f'|> filter(fn: (r) => r["field"] == "{field}")' if field else ""
+            measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
+            field_filter = f'|> filter(fn: (r) => r["_field"] == "{field}")' if field else ""
             # Try to get the last data point from processed bucket
             query_last = f'''
             from(bucket: "{bucket}")
