@@ -89,11 +89,7 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
                         second_reset_idx = len(day_data) - 1
                     else:
                         # Coudlnt find a second reset so we assume that the last record is the second reset and adjust the time to the end of the day
-                        logger.warning(
-                            f"Could not find a second reset for {entity_id} on {day.date()}! "
-                            f"The last datapoint is {day_data[-1].get('value')} at {day_data[-1].get('time')}! "
-                            "Moving it to the end of the day."
-                        )
+                        logger.warning(f"Could not find a second reset for {entity_id} on {day.date()}! The last datapoint is {day_data[-1].get("value")} at {day_data[-1].get("time")}! Moving it to the end of the day.")
                         second_reset_idx = len(day_data) - 1
 
                 if first_reset_idx is None:
@@ -102,18 +98,32 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
                         first_reset_idx = 0
                     elif day_data[0].get("time") >= day and day_data[0].get("value") > 0.0:
                         # Data is corrupt, add record at midnight and set the idx
-                        logger.warning(f"Could not find a first reset for {entity_id} on {day.date()}! The first datapoint is {day_data[0].get("value")} at {day_data[0].get("time")}! Adding a reset at midnight.")
+                        logger.warning(
+                            f"Could not find a first reset for {entity_id} on {day.date()}! "
+                            f"The first datapoint is {day_data[0].get('value')} at {day_data[0].get('time')}! "
+                            "Adding a reset at midnight."
+                        )
                         first_reset_idx = 0
                         day_data.insert(0, {"time": day, "value": 0.0})
                         second_reset_idx += 1
                     elif day_data[0].get("time") < day and day_data[0].get("value") == 0.0:
                         # Data is corrupt, but the first record is at 0, so we can just move it to midnight and set the idx
-                        logger.warning(f"Could not find a first reset for {entity_id} on {day.date()}! The first datapoint is {day_data[0].get("value")} at {day_data[0].get("time")}! Moving it to midnight.")
+                        logger.warning(
+                            f"Could not find a first reset for {entity_id} on {day.date()}! "
+                            f"The first datapoint is {day_data[0].get('value')} at {day_data[0].get('time')}! "
+                            "Moving it to midnight."
+                        )
                         first_reset_idx = 0
                         day_data[0]["time"] = day
                     else:
-                        logger.error(f"Could not find a first reset for {entity_id} on {day.date()}! The first datapoint is {day_data[0].get("value")} at {day_data[0].get("time")}!")
-                        raise ValueError(f"Could not find a first reset for {entity_id} on {day.date()}! The first datapoint is {day_data[0].get("value")} at {day_data[0].get("time")}!")
+                        logger.error(
+                            f"Could not find a first reset for {entity_id} on {day.date()}! "
+                            f"The first datapoint is {day_data[0].get('value')} at {day_data[0].get('time')}!"
+                        )
+                        raise ValueError(
+                            f"Could not find a first reset for {entity_id} on {day.date()}! "
+                            f"The first datapoint is {day_data[0].get('value')} at {day_data[0].get('time')}!"
+                        )
                 
                 first_reset_time = day_data[first_reset_idx].get("time")
                 second_reset_time = day_data[second_reset_idx].get("time")
