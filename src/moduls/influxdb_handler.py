@@ -140,7 +140,8 @@ class InfluxDBHandler:
         entity_id: str,
         stop_time: Optional[datetime] = None,
         field: str = "value",
-        measurement: Optional[str] = None
+        measurement: Optional[str] = None,
+        version: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieve all data points for a specific time range, entity, and field.
@@ -152,7 +153,7 @@ class InfluxDBHandler:
             entity_id: Entity ID to filter by
             stop_time: Optional stop datetime. If None, queries the whole day of start_time
             field: Field name to filter by (default: "value")
-            
+            measurement: Optional measurement name to filter by 
         Returns:
             List of dictionaries with timestamp and value, empty list on error
             
@@ -200,7 +201,7 @@ class InfluxDBHandler:
             logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
             measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
-
+            version_filter = f'|> filter(fn: (r) => r["version"] == "{version}")' if version else ""
             # Build Flux query with UTC timestamps
             query = f'''
             from(bucket: "{bucket}")
@@ -208,6 +209,7 @@ class InfluxDBHandler:
                 |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
                 |> filter(fn: (r) => r["_field"] == "{field}")
                 {measurement_filter}
+                {version_filter}
                 |> keep(columns: ["_time", "_value"])
             '''
             
@@ -244,7 +246,8 @@ class InfluxDBHandler:
         entity_id: str,
         stop_time: Optional[datetime] = None,
         field: str = "value",
-        measurement: Optional[str] = None
+        measurement: Optional[str] = None,
+        version: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieve the last data point for a specific time range, entity, and field.
@@ -256,7 +259,8 @@ class InfluxDBHandler:
             entity_id: Entity ID to filter by
             stop_time: Optional stop datetime. If None, queries the whole day of start_time
             field: Field name to filter by (default: "value")
-            
+            measurement: Optional measurement name to filter by
+            version: Optional version name to filter by
         Returns:
             last data point as a dictionary with timestamp and value, or None if no data found
             
@@ -304,7 +308,7 @@ class InfluxDBHandler:
             logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
             measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
-
+            version_filter = f'|> filter(fn: (r) => r["version"] == "{version}")' if version else ""
             # Build Flux query
             query = f'''
             from(bucket: "{bucket}")
@@ -312,6 +316,7 @@ class InfluxDBHandler:
                 |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
                 |> filter(fn: (r) => r["_field"] == "{field}")
                 {measurement_filter}
+                {version_filter}
                 |> keep(columns: ["_time", "_value"])
                 |> max()
                 |> limit(n: 1)
@@ -541,7 +546,7 @@ class InfluxDBHandler:
             raise RuntimeError(f"Error writing data point: {e}")
         
 
-    def get_available_versions(
+    def get_last_version(
         self,
         bucket: str,
         scenario: Optional[str] = None,
@@ -573,6 +578,7 @@ class InfluxDBHandler:
             query = f'''
             from(bucket: "{bucket}")
                 |> range(start: 0)
+                
                 {scenario_filter}
                 {entity_filter}
                 {measurement_filter}
@@ -594,10 +600,10 @@ class InfluxDBHandler:
             
             version_list = sorted(versions)
             logger.debug(f"Available versions in {bucket}: {version_list}")
-            return version_list
+            return version_list[-1] if version_list else None
         except Exception as e:
             logger.error(f"Error querying available versions: {e}", exc_info=True)
-            return []
+            raise RuntimeError(f"Error querying available versions: {e}")
         
     def __enter__(self):
         """Context manager entry."""
