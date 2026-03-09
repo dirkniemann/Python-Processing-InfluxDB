@@ -4,7 +4,7 @@
         "output_bucket": "testing",
         "entities_to_process": {
             "fix_waermepumpe_stromverbrauch": {
-                "version": "v4",
+                "version": "v5",
                 "output_measurement": "fix_waermepumpe_stromverbrauch",
                 "entities": [
                     "e3_vitocal_heizung_stromverbrauch_heute",
@@ -14,14 +14,14 @@
             "daily_aggregate": {
                 "output_measurement": "Waermepumpe_statistik",
                 "output_entity_id": "Gesamt",
-                "version": "v1",
+                "version": "v2",
                 "entities": [
                     "e3_vitocal_heizung_stromverbrauch_heute",
                     "e3_vitocal_heizung_stromverbrauch_heute_2"
                 ]
             },
             "Waermepumpe_statistik": {
-                "version": "v1",
+                "version": "v2",
                 "output_measurement": "Waermepumpe_statistik",
                 "output_entity_id": "Gesamt",
                 "entities": [
