@@ -36,10 +36,17 @@ class DailyAggregateProcessor(EntityProcessor):
 
         logger.info(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
 
-        for day in days_to_process:
-            self._process_day(day)
+        last_version = self.influx_handler.get_last_version(
+            bucket=self.output_bucket,
+            entity_id=self.entities[0],
+            field="value",
+            measurement="fix_waermepumpe_stromverbrauch",
+        )
 
-    def _process_day(self, day: datetime) -> None:
+        for day in days_to_process:
+            self._process_day(day, last_version)
+
+    def _process_day(self, day: datetime, last_version: str) -> None:
         """Process a single day for an entity."""
         sum_value = 0.0
 
@@ -50,6 +57,7 @@ class DailyAggregateProcessor(EntityProcessor):
                 measurement="fix_waermepumpe_stromverbrauch",
                 entity_id=entity_id,
                 field="value",
+                version=last_version
             )
 
             if day_data is not None:
@@ -68,7 +76,8 @@ class DailyAggregateProcessor(EntityProcessor):
                     f"Processed daily aggregate for {entity_id} on {day.date()}: {day_data}"
                 )
             else:
-                logger.warning(f"No data found for {entity_id} on {day.date()}, skipping")
+                logger.error(f"No data found for {entity_id} on {day.date()}")
+                raise ValueError(f"No data found for {entity_id} on {day.date()}")
 
         self.influx_handler.write_datapoint(
             bucket=self.output_bucket,
