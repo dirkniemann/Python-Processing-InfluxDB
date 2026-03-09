@@ -28,7 +28,7 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
         days_to_process = get_days_to_process(last_data_day)
 
         if not days_to_process:
-            logger.warning(f"No days to process for {self.entities[0]}")
+            logger.info(f"No days to process for {self.entities[0]}")
             return
 
         logger.info(f"Processing {len(days_to_process)} days for {self.entities[0]}")
@@ -143,7 +143,6 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
             else:
                 logger.warning(f"No data found for {entity_id} on {day.date()}, fill with 0")
                 correct_data =  self._fill_with_zeroes(day)
-                continue
 
             correct_data = self._make_monoton(correct_data)
 
