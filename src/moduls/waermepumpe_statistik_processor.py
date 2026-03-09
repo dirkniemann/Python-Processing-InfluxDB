@@ -35,12 +35,19 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             logger.warning(f"No days to process for {self.output_entity_id}")
             return
 
+        last_version = self.influx_handler.get_last_version(
+            bucket=self.output_bucket,
+            entity_id=self.entities[0],
+            field="value",
+            measurement="fix_waermepumpe_stromverbrauch",
+        )
+
         logger.info(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
 
         for day in days_to_process:
-            self._process_day(day)
+            self._process_day(day, last_version)
 
-    def _process_day(self, day: datetime) -> None:
+    def _process_day(self, day: datetime, last_version: str) -> None:
         """Process a single day's worth of heat pump data."""
         logger.debug(f"Processing day {day.date()} for heat pump statistics")
         grid_active_power = self.influx_handler.get_data(day, self.input_bucket, self.entities[2])
@@ -52,7 +59,8 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                 start_time=day, 
                 bucket=self.output_bucket, 
                 entity_id=pump_entity, 
-                field="value", 
+                field="value",
+                version=last_version,
                 measurement="fix_waermepumpe_stromverbrauch"
             )
 
