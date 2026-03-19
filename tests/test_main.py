@@ -16,7 +16,7 @@ class FakeHandler:
         self.disconnected = True
 
     def get_first_data_day(self, bucket):
-        return datetime(2024, 1, 1)
+        return datetime(2024, 1, 1).date()
 
 
 class FakeProcessor:

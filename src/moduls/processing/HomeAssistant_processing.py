@@ -1,15 +1,11 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.influxdb_handler import LOCAL_TZ
-
-if TYPE_CHECKING:
-    from moduls.daily_aggregate_processor import DailyAggregateProcessor
-    from moduls.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
-    from moduls.fix_waermepumpe_stromverbrauch_processor import (
-        FixWaermepumpeStromverbrauchProcessor,
-    )
+from moduls.processing.daily_aggregate_processor import DailyAggregateProcessor
+from moduls.processing.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
+from moduls.processing.fix_waermepumpe_stromverbrauch_processor import FixWaermepumpeStromverbrauchProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +42,7 @@ class EntityProcessor:
         output_bucket: str,
         version: str,
         entities: List[str],
-        first_data_day: datetime,
+        first_data_day: datetime.date,
         output_measurement: Optional[str] = None,
         output_entity_id: Optional[str] = None
     ):
@@ -73,7 +69,7 @@ class HomeAssistantProcessor:
         self, 
         influx_handler: InfluxDBHandler,
         processing_config: Dict[str, Any],
-        first_data_day: datetime
+        first_data_day: datetime.date
     ):
         """
         Initialize the Home Assistant data processor.
@@ -121,7 +117,6 @@ class HomeAssistantProcessor:
     
     def _init_fix_waermepumpe_stromverbrauch_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the fix_waermepumpe_stromverbrauch processor from config."""
-        from moduls.fix_waermepumpe_stromverbrauch_processor import FixWaermepumpeStromverbrauchProcessor
 
         if not isinstance(config, dict):
             raise ValueError("'fix_waermepumpe_stromverbrauch' config must be a dictionary")
@@ -161,7 +156,6 @@ class HomeAssistantProcessor:
 
     def _init_daily_aggregate_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the daily aggregate processor from config."""
-        from moduls.daily_aggregate_processor import DailyAggregateProcessor
 
         if not isinstance(config, dict):
             raise ValueError("'daily_aggregate' config must be a dictionary")
@@ -206,7 +200,6 @@ class HomeAssistantProcessor:
 
     def _init_waermepumpe_statistik_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the Waermepumpe_statistik processor from config."""
-        from moduls.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
 
         if not isinstance(config, dict):
             raise ValueError("'Waermepumpe_statistik' config must be a dictionary")
@@ -258,6 +251,7 @@ class HomeAssistantProcessor:
         
         for processor in self.processors:
             try:
+                logger.info(f"Running processor: {processor.__class__.__name__}")
                 processor.process()
             except Exception as e:
                 logger.error(f"Error in processor {processor.__class__.__name__}: {e}", exc_info=True)

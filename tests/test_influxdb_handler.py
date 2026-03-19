@@ -44,4 +44,4 @@ def test_write_datapoint_writes_record(fake_influx_module):
     assert handler.client._write_api.records
     record = handler.client._write_api.records[0]
     assert record["bucket"] == "b"
-    assert record["record"]["fields"]["f"] == 1
+    assert record["record"]["fields"]["f"] == 1.0

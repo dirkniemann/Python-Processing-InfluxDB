@@ -132,5 +132,5 @@ nano .env
 
 Todo:
 - MQTT versenden über Status des Skripts, log bei error mitschicken
-- Einabeun, dass immer die aktuellsten Verisonen als inout genutzt werden
+- Umzeiten Handling überarbeiten, intern immer mit UTC arbeiten!
 - add tests
