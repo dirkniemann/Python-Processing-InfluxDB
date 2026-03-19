@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-from moduls.HomeAssistant_processing import EntityProcessor, get_days_to_process
+from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_to_process
 
 logger = logging.getLogger(__name__)
 

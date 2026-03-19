@@ -1,10 +1,9 @@
 import logging
 from datetime import datetime, timedelta
 from moduls.influxdb_handler import LOCAL_TZ
-from moduls.HomeAssistant_processing import EntityProcessor, get_days_to_process
+from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_to_process
 
 logger = logging.getLogger(__name__)
-
 
 class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
     """Processor to fix heat pump electricity consumption data by überarbeiten der Zeitstempel. Eigentlich sollten die Daten um 00:00 Uhr auf 0 zurückgesetzt werden, das passiert baer nicht sicher. Teilweise kommen nach Mitternacht noch Daten vom Vortag, die dann fälschlicherweise dem neuen Tag zugeordnet werden. Dieser Prozessor soll die Daten korrigieren, indem er die Zeitstempel überarbeitet und die Werte entsprechend anpasst.
@@ -34,6 +33,8 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
         logger.info(f"Processing {len(days_to_process)} days for {self.entities[0]}")
 
         for day in days_to_process:
+            if day.date() == datetime(2025, 3, 31).date():
+                print("Testing")
             self._process_day(day)
 
     def _process_day(self, day: datetime) -> None:

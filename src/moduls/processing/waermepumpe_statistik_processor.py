@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-
-from moduls.HomeAssistant_processing import EntityProcessor, get_days_to_process
+from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_to_process
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +173,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             measurement=self.output_measurement,
             entity_id=self.output_entity_id,
             version=self.version,
-            field="daily_sum_pv",
+            field="daily_pv",
             unit="kWh",
             value=sum_pv_total,
             timestamp=day,
@@ -184,7 +183,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             measurement=self.output_measurement,
             entity_id=self.output_entity_id,
             version=self.version,
-            field="daily_sum_grid_import",
+            field="daily_grid_import",
             unit="kWh",
             value=sum_grid_import_total,
             timestamp=day,

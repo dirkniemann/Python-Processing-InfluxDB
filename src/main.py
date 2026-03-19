@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from moduls.logger_setup import get_logger
 from moduls.influxdb_handler import InfluxDBHandler
-from moduls.HomeAssistant_processing import HomeAssistantProcessor
+from moduls.processing.HomeAssistant_processing import HomeAssistantProcessor
 
 def parse_arguments() -> argparse.Namespace:
     """

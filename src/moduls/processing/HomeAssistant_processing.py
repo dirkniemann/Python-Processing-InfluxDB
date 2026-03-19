@@ -1,15 +1,11 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.influxdb_handler import LOCAL_TZ
-
-if TYPE_CHECKING:
-    from moduls.daily_aggregate_processor import DailyAggregateProcessor
-    from moduls.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
-    from moduls.fix_waermepumpe_stromverbrauch_processor import (
-        FixWaermepumpeStromverbrauchProcessor,
-    )
+from moduls.processing.daily_aggregate_processor import DailyAggregateProcessor
+from moduls.processing.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
+from moduls.processing.fix_waermepumpe_stromverbrauch_processor import FixWaermepumpeStromverbrauchProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +117,6 @@ class HomeAssistantProcessor:
     
     def _init_fix_waermepumpe_stromverbrauch_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the fix_waermepumpe_stromverbrauch processor from config."""
-        from moduls.fix_waermepumpe_stromverbrauch_processor import FixWaermepumpeStromverbrauchProcessor
 
         if not isinstance(config, dict):
             raise ValueError("'fix_waermepumpe_stromverbrauch' config must be a dictionary")
@@ -161,7 +156,6 @@ class HomeAssistantProcessor:
 
     def _init_daily_aggregate_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the daily aggregate processor from config."""
-        from moduls.daily_aggregate_processor import DailyAggregateProcessor
 
         if not isinstance(config, dict):
             raise ValueError("'daily_aggregate' config must be a dictionary")
@@ -206,7 +200,6 @@ class HomeAssistantProcessor:
 
     def _init_waermepumpe_statistik_processor(self, config: Dict[str, Any]) -> None:
         """Initialize the Waermepumpe_statistik processor from config."""
-        from moduls.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
 
         if not isinstance(config, dict):
             raise ValueError("'Waermepumpe_statistik' config must be a dictionary")
