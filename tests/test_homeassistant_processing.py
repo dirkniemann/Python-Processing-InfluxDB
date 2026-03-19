@@ -1,48 +1,86 @@
 import importlib
 from datetime import datetime
-import pytz
+
+import pytest
 
 
-def test_homeassistant_processor_processes_daily_aggregate(fake_influx_module, prod_config, fake_logger):
-    handler_module = importlib.import_module("moduls.influxdb_handler")
-    importlib.reload(handler_module)
-    processing_module = importlib.import_module("moduls.HomeAssistant_processing")
+def test_homeassistant_processor_creates_processors(monkeypatch, prod_config, fake_influx_module):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
     importlib.reload(processing_module)
 
-    handler = handler_module.InfluxDBHandler()
-    handler.client = handler_module.InfluxDBClient()
+    created = []
 
-    # Track writes
-    writes = []
-    handler.write_datapoint = lambda **kwargs: writes.append(kwargs) or True
-    # Accept optional measurement/field kwargs to mirror the real signature
-    handler.get_last_data_day = lambda bucket, entity_id, version=None, scenario=None, **_: None
-    handler.get_last_datapoint = lambda start_time, bucket, entity_id, field="value", measurement=None, **_: {"value": 2}
+    def make_stub(name):
+        class StubProcessor:
+            def __init__(self, *args, **kwargs):
+                self.name = name
+                self.args = args
+                self.kwargs = kwargs
+                self.process_called = False
+                created.append(self)
 
-    first_data_day = handler_module.LOCAL_TZ.localize(datetime(2024, 1, 1))
+            def process(self):
+                self.process_called = True
+
+        return StubProcessor
+
+    monkeypatch.setattr(processing_module, "FixWaermepumpeStromverbrauchProcessor", make_stub("fix"))
+    monkeypatch.setattr(processing_module, "DailyAggregateProcessor", make_stub("daily"))
+    monkeypatch.setattr(processing_module, "WaermepumpeStatistikProcessor", make_stub("stat"))
+
+    handler = object()
+    first_day = datetime(2024, 1, 1).date()
     processor = processing_module.HomeAssistantProcessor(
         influx_handler=handler,
         processing_config=prod_config["processing"],
-        first_data_day=first_data_day,
+        first_data_day=first_day,
     )
 
+    assert len(processor.processors) == 3
     processor.process_data()
-    assert writes, "Expected at least one write during processing"
+    assert all(instance.process_called for instance in created)
+
+    fix_stub = next(p for p in created if p.name == "fix")
+    daily_stub = next(p for p in created if p.name == "daily")
+    stat_stub = next(p for p in created if p.name == "stat")
+
+    assert fix_stub.kwargs["output_measurement"] == prod_config["processing"]["entities_to_process"]["fix_waermepumpe_stromverbrauch"]["output_measurement"]
+    assert daily_stub.kwargs["output_entity_id"] == prod_config["processing"]["entities_to_process"]["daily_aggregate"]["output_entity_id"]
+    assert stat_stub.kwargs["output_entity_id"] == prod_config["processing"]["entities_to_process"]["Waermepumpe_statistik"]["output_entity_id"]
 
 
-def test_homeassistant_processor_validates_config(fake_influx_module):
-    processing_module = importlib.import_module("moduls.HomeAssistant_processing")
+def test_homeassistant_processor_validates_config(monkeypatch, fake_influx_module):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
     importlib.reload(processing_module)
-    handler_module = importlib.import_module("moduls.influxdb_handler")
-    importlib.reload(handler_module)
 
-    handler = handler_module.InfluxDBHandler()
-    handler.client = handler_module.InfluxDBClient()
-    bad_config = {"input_bucket": "a"}
-    first_day = pytz.UTC.localize(datetime(2024, 1, 1))
-    try:
+    handler = object()
+    bad_config = {"input_bucket": "a", "output_bucket": "b"}
+    first_day = datetime(2024, 1, 1).date()
+
+    with pytest.raises(ValueError) as excinfo:
         processing_module.HomeAssistantProcessor(handler, bad_config, first_day)
-    except ValueError as exc:
-        assert "Missing required config keys" in str(exc)
-    else:
-        assert False, "Expected ValueError for missing keys"
+
+    assert "Missing required config keys" in str(excinfo.value)
+
+
+def test_daily_aggregate_requires_output_entity(monkeypatch, fake_influx_module):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
+    importlib.reload(processing_module)
+
+    handler = object()
+    config = {
+        "input_bucket": "input",
+        "output_bucket": "output",
+        "entities_to_process": {
+            "daily_aggregate": {
+                "version": "v1",
+                "entities": ["one"],
+            }
+        },
+    }
+    first_day = datetime(2024, 1, 1).date()
+
+    with pytest.raises(ValueError) as excinfo:
+        processing_module.HomeAssistantProcessor(handler, config, first_day)
+
+    assert "output_entity_id" in str(excinfo.value)
