@@ -42,7 +42,7 @@ class EntityProcessor:
         output_bucket: str,
         version: str,
         entities: List[str],
-        first_data_day: datetime,
+        first_data_day: datetime.date,
         output_measurement: Optional[str] = None,
         output_entity_id: Optional[str] = None
     ):
@@ -69,7 +69,7 @@ class HomeAssistantProcessor:
         self, 
         influx_handler: InfluxDBHandler,
         processing_config: Dict[str, Any],
-        first_data_day: datetime
+        first_data_day: datetime.date
     ):
         """
         Initialize the Home Assistant data processor.
@@ -251,6 +251,7 @@ class HomeAssistantProcessor:
         
         for processor in self.processors:
             try:
+                logger.info(f"Running processor: {processor.__class__.__name__}")
                 processor.process()
             except Exception as e:
                 logger.error(f"Error in processor {processor.__class__.__name__}: {e}", exc_info=True)

@@ -5,7 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def get_days_to_process(last_data_day: datetime) -> List[datetime]:
+def get_days_to_process(last_data_day: datetime.date) -> List[datetime.date]:
     """
     Get list of days that need to be processed.
     Each day is properly localized to handle DST changes.
@@ -15,15 +15,8 @@ def get_days_to_process(last_data_day: datetime) -> List[datetime]:
     today = datetime.now().date()
     yesterday = today - timedelta(days=1)
 
-    while current_day.date() <= yesterday:
-
-        if current_day.tzinfo is not None:
-            naive_day = current_day.replace(tzinfo=None)
-        else:
-            naive_day = current_day
-        
-        localized_day = LOCAL_TZ.localize(naive_day)
-        days_to_process.append(localized_day)        
+    while current_day <= yesterday:
+        days_to_process.append(current_day)        
         current_day += timedelta(days=1)
         
     return days_to_process

@@ -1,6 +1,7 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_to_process
+from moduls.influxdb_handler import local_to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +50,20 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
     def _process_day(self, day: datetime, last_version: str) -> None:
         """Process a single day's worth of heat pump data."""
         logger.debug(f"Processing day {day.date()} for heat pump statistics")
-        grid_active_power = self.influx_handler.get_data(day, self.input_bucket, self.entities[2])
+        day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
+        day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=0)))
+        grid_active_power = self.influx_handler.get_data(
+            start_time=day_start_time,
+            stop_time=day_end_time,
+            bucket=self.input_bucket,
+            entity_id=self.entities[2])
 
         sum_pv = {entity: {"values": 0.0} for entity in self.entities[:2]}
         sum_grid_import = {entity: {"values": 0.0} for entity in self.entities[:2]}
         for pump_entity in self.entities[:2]:
             pump_data = self.influx_handler.get_data(
-                start_time=day, 
+                start_time=day_start_time,
+                stop_time=day_end_time, 
                 bucket=self.output_bucket, 
                 entity_id=pump_entity, 
                 field="value",
@@ -64,24 +72,24 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             )
 
             for idx, record in enumerate(pump_data):
-                if idx == 0:
-                    start_value = 0
-                    start_time = day.replace(hour=0, minute=0, second=0, microsecond=0)
-                else:
-                    start_value = pump_data[idx - 1].get("value")
-                    start_time = pump_data[idx - 1].get("time")
+                start_value = record.get("value")
+                start_time = record.get("time")
 
-                stop_value = record.get("value")
-                stop_time = record.get("time")
+                if idx + 1 < len(pump_data):
+                    stop_value = pump_data[idx + 1].get("value")
+                    stop_time = pump_data[idx + 1].get("time")
+                else:
+                    break
+
                 kWh_diff = stop_value - start_value
                 import_kwh = 0.0
 
                 for grid_idx, grid_record in enumerate(grid_active_power):
-                    grid_start_time = (
-                        day.replace(hour=0, minute=0, second=0, microsecond=0)
-                        if grid_idx == 0
-                        else grid_active_power[grid_idx - 1].get("time")
-                    )
+                    grid_start_time = record.get("time")
+                    if grid_idx + 1 < len(grid_active_power):
+                        grid_stop_time = grid_active_power[grid_idx + 1].get("time")
+                    else:
+                        break
                     grid_stop_time = grid_record.get("time")
 
                     if grid_start_time >= stop_time:
@@ -106,17 +114,17 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                     waermepumpe_grid = kWh_diff - waermepumpe_pv
                 else:
                     logger.error(
-                        f"Unexpected negative import_kwh value: {import_kwh} for {pump_entity} on {day.date()}"
+                        f"Unexpected negative import_kwh value: {import_kwh} for {pump_entity} on {day}"
                     )
                     raise ValueError(
-                        f"Unexpected negative import_kwh value: {import_kwh} for {pump_entity} on {day.date()}"
+                        f"Unexpected negative import_kwh value: {import_kwh} for {pump_entity} on {day}"
                     )
                 if waermepumpe_pv < 0 or waermepumpe_grid < 0:
                     logger.error(
-                        f"Negative contribution calculated for {pump_entity} on {day.date()}: PV={waermepumpe_pv}, Grid={waermepumpe_grid}"
+                        f"Negative contribution calculated for {pump_entity} on {day}: PV={waermepumpe_pv}, Grid={waermepumpe_grid}"
                     )
                     raise ValueError(
-                        f"Negative contribution calculated for {pump_entity} on {day.date()}: PV={waermepumpe_pv}, Grid={waermepumpe_grid}"
+                        f"Negative contribution calculated for {pump_entity} on {day}: PV={waermepumpe_pv}, Grid={waermepumpe_grid}"
                     )
                 self.influx_handler.write_datapoint(
                     bucket=self.output_bucket,
@@ -142,7 +150,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                 sum_pv[pump_entity]["values"] += waermepumpe_pv
                 sum_grid_import[pump_entity]["values"] += waermepumpe_grid
 
-            day = day.replace(hour=23, minute=59, second=59, microsecond=0)
+            day = day.replace(hour=23, minute=59, second=59, microsecond=999999)
 
             self.influx_handler.write_datapoint(
                 bucket=self.output_bucket,
@@ -152,7 +160,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                 field="daily_pv",
                 unit="kWh",
                 value=float(sum_pv[pump_entity]["values"]),
-                timestamp=day,
+                timestamp=day_end_time,
             )
             self.influx_handler.write_datapoint(
                 bucket=self.output_bucket,
@@ -162,7 +170,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                 field="daily_grid_import",
                 unit="kWh",
                 value=sum_grid_import[pump_entity]["values"],
-                timestamp=day,
+                timestamp=day_end_time,
             )
         sum_pv_total = float(sum(sum_pv[pump_entity]["values"] for pump_entity in sum_pv))
         sum_grid_import_total = float(
@@ -176,7 +184,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             field="daily_pv",
             unit="kWh",
             value=sum_pv_total,
-            timestamp=day,
+            timestamp=day_end_time,
         )
         self.influx_handler.write_datapoint(
             bucket=self.output_bucket,
@@ -186,5 +194,5 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             field="daily_grid_import",
             unit="kWh",
             value=sum_grid_import_total,
-            timestamp=day,
+            timestamp=day_end_time,
         )

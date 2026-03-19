@@ -1,6 +1,7 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_to_process
+from moduls.influxdb_handler import local_to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,13 @@ class DailyAggregateProcessor(EntityProcessor):
     def _process_day(self, day: datetime, last_version: str) -> None:
         """Process a single day for an entity."""
         sum_value = 0.0
+        day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
+        day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=999999)))
 
         for entity_id in self.entities:
             day_data = self.influx_handler.get_last_datapoint(
-                start_time=day,
+                start_time=day_start_time,
+                stop_time=day_end_time,
                 bucket=self.output_bucket,
                 measurement="fix_waermepumpe_stromverbrauch",
                 entity_id=entity_id,
@@ -69,15 +73,15 @@ class DailyAggregateProcessor(EntityProcessor):
                     field="daily_sum",
                     unit="kWh",
                     value=day_data["value"],
-                    timestamp=day,
+                    timestamp=day_end_time,
                     measurement=self.output_measurement,
                 )
                 logger.debug(
-                    f"Processed daily aggregate for {entity_id} on {day.date()}: {day_data}"
+                    f"Processed daily aggregate for {entity_id} on {day}: {day_data}"
                 )
             else:
-                logger.error(f"No data found for {entity_id} on {day.date()}")
-                raise ValueError(f"No data found for {entity_id} on {day.date()}")
+                logger.error(f"No data found for {entity_id} on {day}")
+                raise ValueError(f"No data found for {entity_id} on {day}")
 
         self.influx_handler.write_datapoint(
             bucket=self.output_bucket,
@@ -86,6 +90,6 @@ class DailyAggregateProcessor(EntityProcessor):
             field="daily_sum",
             unit="kWh",
             value=sum_value,
-            timestamp=day,
+            timestamp=day_end_time,
             measurement=self.output_measurement,
         )

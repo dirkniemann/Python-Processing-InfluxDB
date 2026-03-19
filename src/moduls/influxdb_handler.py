@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from influxdb_client import InfluxDBClient
@@ -173,30 +174,15 @@ class InfluxDBHandler:
         try:
             # If stop_time is not provided, query the whole day of start_time
             if stop_time is None:
-                actual_start = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
-
-                if actual_start.tzinfo is not None:
-                    naive_start_time = actual_start.replace(tzinfo=None)
-
-                else:
-                    naive_start_time = actual_start
-
-                actual_start = LOCAL_TZ.localize(naive_start_time)
-
-                actual_stop = actual_start + timedelta(days=1)
-                if actual_stop.tzinfo is not None:
-                    naive_stop_time = actual_stop.replace(tzinfo=None)
-
-                else:
-                    naive_stop_time = actual_stop
-
-                actual_stop = LOCAL_TZ.localize(naive_stop_time)
-
+                start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                actual_start = local_to_utc(start_time)
+                actual_stop = local_to_utc(start_time + timedelta(days=1))
                 logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
+
             else:
                 actual_start = start_time
                 actual_stop = stop_time
-            
+
             logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
             logger.debug(f"UTC range: {actual_start} to {actual_stop}")
             
@@ -224,9 +210,8 @@ class InfluxDBHandler:
             for table in tables:
                 for record in table.records:
                     utc_time = record.get_time()
-                    local_time = utc_to_local(utc_time)
                     results.append({
-                        "time": local_time,
+                        "time": utc_time,
                         "value": record.get_value()
                     })
 
@@ -280,29 +265,16 @@ class InfluxDBHandler:
         try:
             # If stop_time is not provided, query the whole day of start_time
             if stop_time is None:
-                actual_start = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
-
-                if actual_start.tzinfo is not None:
-                    naive_start_time = actual_start.replace(tzinfo=None)
-
-                else:
-                    naive_start_time = actual_start
-
-                actual_start = LOCAL_TZ.localize(naive_start_time)
-
-                actual_stop = actual_start + timedelta(days=1)
-                if actual_stop.tzinfo is not None:
-                    naive_stop_time = actual_stop.replace(tzinfo=None)
-
-                else:
-                    naive_stop_time = actual_stop
-
-                actual_stop = LOCAL_TZ.localize(naive_stop_time)
-
+                start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                actual_start = local_to_utc(start_time)
+                actual_stop = local_to_utc(start_time + timedelta(days=1))
                 logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
+
             else:
                 actual_start = start_time
                 actual_stop = stop_time
+
+                logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
             
             logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
             logger.debug(f"UTC range: {actual_start} to {actual_stop}")
@@ -349,7 +321,7 @@ class InfluxDBHandler:
     def get_first_data_day(
         self,
         bucket: str,
-    ) -> Optional[datetime]:
+    ) -> Optional[datetime.date]:
         """
         Get the first day with data points in a bucket.
         
@@ -379,10 +351,8 @@ class InfluxDBHandler:
             for table in tables:
                 for record in table.records:
                     first_time = record.get_time()
-                    local_first_time = utc_to_local(first_time)
-                    local_first_time = local_first_time.replace(hour=23, minute=59, second=59, microsecond=0)
-                    logger.info(f"Found first data point in {bucket}: {local_first_time.date()}")
-                    return local_first_time
+                    logger.info(f"Found first data point in {bucket}: {first_time.date()}")
+                    return first_time.date()
             
             logger.warning(f"No data found in {bucket}")
             return None
@@ -399,7 +369,7 @@ class InfluxDBHandler:
         entity_id: Optional[str] = None,
         measurement: Optional[str] = None,
         field: Optional[str] = None
-    ) -> Optional[datetime]:
+    ) -> Optional[datetime.date]:
         """
         Get the last day with data points for a specific version tag.
         
@@ -452,14 +422,13 @@ class InfluxDBHandler:
             for table in tables:
                 for record in table.records:
                     last_time = record.get_time()
-                    local_last_time = utc_to_local(last_time)
-                    local_last_time = local_last_time.replace(hour=23, minute=59, second=59, microsecond=0)
-                    logger.debug(f"Found last data point in {bucket}: {local_last_time.date()}")
-                    return local_last_time
+                    logger.debug(f"Found last data point in {bucket}: {last_time.date()}")
+                    return last_time.date()
             return None
         except Exception as e:
             logger.error(f"Error querying last data day: {e}", exc_info=True)
             return None
+        
     def write_datapoint(
         self,
         bucket: str,
@@ -518,8 +487,6 @@ class InfluxDBHandler:
             # If timestamp is naive, assume it's Berlin time and convert to UTC
             if write_timestamp.tzinfo is None:
                 write_timestamp = local_to_utc(write_timestamp)
-            else:
-                write_timestamp = write_timestamp.astimezone(pytz.UTC)
             
             # Normalize numeric values to float to avoid field type conflicts in InfluxDB
             normalized_value = float(value) if isinstance(value, (int, float)) else value
@@ -597,14 +564,21 @@ class InfluxDBHandler:
                     version = record.get_value()
                     if version:
                         versions.add(version)
-            
-            version_list = sorted(versions)
+
+            version_list = sorted(versions, key=self._version_sort_key)
             logger.debug(f"Available versions in {bucket}: {version_list}")
             return version_list[-1] if version_list else None
         except Exception as e:
             logger.error(f"Error querying available versions: {e}", exc_info=True)
             raise RuntimeError(f"Error querying available versions: {e}")
         
+    @staticmethod
+    def _version_sort_key(value: str) -> tuple[int, int, str]:
+        match = re.search(r"(\d+)$", value)
+        if match:
+            return (0, int(match.group(1)), value)
+        return (1, 0, value)
+    
     def __enter__(self):
         """Context manager entry."""
         self.connect()
