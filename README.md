@@ -132,5 +132,6 @@ nano .env
 
 Todo:
 - MQTT versenden über Status des Skripts, log bei error mitschicken
-- Umzeiten Handling überarbeiten, intern immer mit UTC arbeiten!
+- Szenerios für unterschiedliche Betteriegrößen
+- Daten analysieren, ob die valide sind
 - add tests

@@ -49,9 +49,9 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
 
     def _process_day(self, day: datetime, last_version: str) -> None:
         """Process a single day's worth of heat pump data."""
-        logger.debug(f"Processing day {day.date()} for heat pump statistics")
+        logger.debug(f"Processing day {day} for heat pump statistics")
         day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
-        day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=0)))
+        day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=999999)))
         grid_active_power = self.influx_handler.get_data(
             start_time=day_start_time,
             stop_time=day_end_time,
@@ -150,7 +150,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                 sum_pv[pump_entity]["values"] += waermepumpe_pv
                 sum_grid_import[pump_entity]["values"] += waermepumpe_grid
 
-            day = day.replace(hour=23, minute=59, second=59, microsecond=999999)
+
 
             self.influx_handler.write_datapoint(
                 bucket=self.output_bucket,
