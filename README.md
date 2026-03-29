@@ -133,5 +133,4 @@ nano .env
 Todo:
 - MQTT versenden über Status des Skripts, log bei error mitschicken
 - Szenerios für unterschiedliche Betteriegrößen
-- Daten analysieren, ob die valide sind
 - add tests
