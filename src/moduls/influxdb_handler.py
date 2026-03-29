@@ -172,19 +172,23 @@ class InfluxDBHandler:
             return []
         
         try:
-            # If stop_time is not provided, query the whole day of start_time
+            def _to_utc(dt: datetime) -> datetime:
+                if dt.tzinfo is None:
+                    return local_to_utc(dt)
+                return dt.astimezone(UTC_TZ)
+
             if stop_time is None:
                 start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
-                actual_start = local_to_utc(start_time)
-                actual_stop = local_to_utc(start_time + timedelta(days=1))
+                actual_start = _to_utc(start_time)
+                actual_stop = _to_utc(start_time + timedelta(days=1))
                 logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
-
             else:
-                actual_start = start_time
-                actual_stop = stop_time
+                actual_start = _to_utc(start_time)
+                actual_stop = _to_utc(stop_time)
 
-            logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
-            logger.debug(f"UTC range: {actual_start} to {actual_stop}")
+            logger.debug(
+                f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (UTC)"
+            )
             
             measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
             version_filter = f'|> filter(fn: (r) => r["version"] == "{version}")' if version else ""
@@ -233,7 +237,7 @@ class InfluxDBHandler:
         field: str = "value",
         measurement: Optional[str] = None,
         version: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Retrieve the last data point for a specific time range, entity, and field.
         
@@ -260,24 +264,26 @@ class InfluxDBHandler:
         """
         if not self.client:
             logger.error("Cannot query data: Client not connected")
-            return []
+            return None
         
         try:
-            # If stop_time is not provided, query the whole day of start_time
+            def _to_utc(dt: datetime) -> datetime:
+                if dt.tzinfo is None:
+                    return local_to_utc(dt)
+                return dt.astimezone(UTC_TZ)
+
             if stop_time is None:
                 start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
-                actual_start = local_to_utc(start_time)
-                actual_stop = local_to_utc(start_time + timedelta(days=1))
+                actual_start = _to_utc(start_time)
+                actual_stop = _to_utc(start_time + timedelta(days=1))
                 logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
-
             else:
-                actual_start = start_time
-                actual_stop = stop_time
+                actual_start = _to_utc(start_time)
+                actual_stop = _to_utc(stop_time)
 
-                logger.debug(f"No stop_time provided, querying whole day: {actual_start.date()}")
-            
-            logger.debug(f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (local time)")
-            logger.debug(f"UTC range: {actual_start} to {actual_stop}")
+            logger.debug(
+                f"Querying {bucket} for {entity_id} from {actual_start} to {actual_stop} (UTC)"
+            )
             
             measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
             version_filter = f'|> filter(fn: (r) => r["version"] == "{version}")' if version else ""
@@ -311,12 +317,12 @@ class InfluxDBHandler:
                     }
                     logger.debug(f"Retrieved last data point for {entity_id}: {last_data}")
                     return last_data
-            
+
             logger.debug(f"No data found for {entity_id}")
             return None
         except Exception as e:
             logger.error(f"Error querying data: {e}", exc_info=True)
-            return []
+            return None
 
     def get_first_data_day(
         self,
@@ -520,21 +526,16 @@ class InfluxDBHandler:
         entity_id: Optional[str] = None,
         measurement: Optional[str] = None,
         field: Optional[str] = None
-    ) -> List[str]:
+    ) -> Optional[str]:
         """
-        Get a list of available version tags in the bucket, optionally filtered by scenario and entity_id.
-        Args:
-            bucket: Bucket to check for versions
-            scenario: Optional scenario tag to filter by
-            entity_id: Optional entity_id to filter by
-            measurement: Optional measurement to filter by
-            field: Optional field to filter by
-        Returns:
-            List of unique version tags found in the bucket
+        Get the latest version tag present in a bucket, optionally filtered by tags.
+
+        Returns the highest semver-like suffix (numeric suffix wins) or ``None`` if
+        no version is stored.
         """
         if not self.client:
             logger.error("Cannot query data: Client not connected")
-            return []
+            return None
         
         try:
             scenario_filter = f'|> filter(fn: (r) => r["scenario"] == "{scenario}")' if scenario else ""
@@ -574,17 +575,18 @@ class InfluxDBHandler:
         
     @staticmethod
     def _version_sort_key(value: str) -> tuple[int, int, str]:
+        """Sort versions by numeric suffix first, then lexicographically."""
         match = re.search(r"(\d+)$", value)
         if match:
             return (0, int(match.group(1)), value)
         return (1, 0, value)
     
     def __enter__(self):
-        """Context manager entry."""
+        """Open connection for use in ``with InfluxDBHandler() as handler`` blocks."""
         self.connect()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
+        """Close connection when leaving a context manager scope."""
         self.disconnect()
 

@@ -10,7 +10,13 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
     """Processor for heat pump statistics entities."""
 
     def process(self) -> None:
-        """Process daily heat pump statistics for configured entities."""
+        """Process daily heat pump statistics for configured entities.
+
+        Args:
+            None
+        Returns:
+            None. Writes PV contribution and grid import per entity plus daily totals.
+        """
         logger.info(
             f"Processing {len(self.entities)} heat pump statistic entities (version: {self.version})"
         )
@@ -19,7 +25,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             bucket=self.output_bucket,
             entity_id=self.output_entity_id,
             version=self.version,
-            field="daily_sum_pv",
+            field="daily_pv",
             measurement=self.output_measurement,
         )
 
@@ -42,13 +48,25 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             measurement="fix_waermepumpe_stromverbrauch",
         )
 
+        if not last_version:
+            raise RuntimeError(
+                "No processed version found for fix_waermepumpe_stromverbrauch; cannot compute statistics"
+            )
+
         logger.info(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
 
         for day in days_to_process:
             self._process_day(day, last_version)
 
-    def _process_day(self, day: datetime, last_version: str) -> None:
-        """Process a single day's worth of heat pump data."""
+    def _process_day(self, day: datetime.date, last_version: str) -> None:
+        """Process a single day's worth of heat pump data.
+
+        Args:
+            day: Calendar day to process (date without tz).
+            last_version: Version tag of processed consumption data to read from.
+        Returns:
+            None. Writes per-interval PV/grid split, daily totals, and combined totals.
+        """
         logger.debug(f"Processing day {day} for heat pump statistics")
         day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
         day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=999999)))
@@ -83,14 +101,13 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
 
                 kWh_diff = stop_value - start_value
                 import_kwh = 0.0
-
+                grid_duration_hours = 0.0
                 for grid_idx, grid_record in enumerate(grid_active_power):
-                    grid_start_time = record.get("time")
+                    grid_start_time = grid_record.get("time")
                     if grid_idx + 1 < len(grid_active_power):
                         grid_stop_time = grid_active_power[grid_idx + 1].get("time")
                     else:
                         break
-                    grid_stop_time = grid_record.get("time")
 
                     if grid_start_time >= stop_time:
                         break
@@ -100,12 +117,14 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                     duration_hours = (grid_stop_time - grid_start_time).total_seconds() / 3600.0
                     if duration_hours <= 0:
                         continue
-
+                    grid_duration_hours += duration_hours
                     power_w = grid_record.get("value", 0)
                     energy_kwh = (power_w * duration_hours) / 1000.0
 
                     if power_w >= 0:
                         import_kwh += energy_kwh
+                pump_duration_hours = (stop_time - start_time).total_seconds() / 3600.0
+                import_kwh = import_kwh * (pump_duration_hours / grid_duration_hours) if grid_duration_hours > 0 else 0.0
                 if import_kwh == 0:
                     waermepumpe_pv = kWh_diff
                     waermepumpe_grid = 0.0

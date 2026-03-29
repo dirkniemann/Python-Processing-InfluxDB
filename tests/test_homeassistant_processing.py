@@ -1,5 +1,5 @@
 import importlib
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -84,3 +84,15 @@ def test_daily_aggregate_requires_output_entity(monkeypatch, fake_influx_module)
         processing_module.HomeAssistantProcessor(handler, config, first_day)
 
     assert "output_entity_id" in str(excinfo.value)
+
+
+def test_get_days_to_process_uses_dates(fake_influx_module):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
+    importlib.reload(processing_module)
+
+    last_day = datetime.now().date() - timedelta(days=1)
+    days = processing_module.get_days_to_process(last_day)
+
+    assert isinstance(days, list)
+    assert all(isinstance(day, date) for day in days)
+    assert not days, "Yesterday should produce no days to process"

@@ -6,9 +6,21 @@ from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_
 logger = logging.getLogger(__name__)
 
 class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
-    """Processor to fix heat pump electricity consumption data by überarbeiten der Zeitstempel. Eigentlich sollten die Daten um 00:00 Uhr auf 0 zurückgesetzt werden, das passiert baer nicht sicher. Teilweise kommen nach Mitternacht noch Daten vom Vortag, die dann fälschlicherweise dem neuen Tag zugeordnet werden. Dieser Prozessor soll die Daten korrigieren, indem er die Zeitstempel überarbeitet und die Werte entsprechend anpasst.
+    """Repair heat pump energy readings when daily resets are missing or mis-timed.
+
+    Some devices should reset to 0 at midnight but occasionally drift; this
+    processor reorders timestamps, inserts missing resets, and enforces
+    monotonic consumption per day before persisting cleaned data.
     """
+
     def process(self) -> None:
+        """Correct daily consumption curves and write cleaned values to the output bucket.
+
+        Args:
+            None
+        Returns:
+            None. Side-effects: writes cleaned records for each entity/day to the output bucket.
+        """
 
         last_data_day = self.influx_handler.get_last_data_day(
             bucket=self.output_bucket,
@@ -36,6 +48,13 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
             self._process_day(day)
 
     def _process_day(self, day: datetime.date) -> None:
+        """Normalize one day of readings by locating resets and fixing misordered timestamps.
+
+        Args:
+            day: Calendar day (naive date) to correct.
+        Returns:
+            None. Writes corrected points for the given day and entities.
+        """
         day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
         day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=0)))
         start_time = local_to_utc(datetime.combine(day - timedelta(days=1), time(hour=20)))
@@ -154,6 +173,13 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
                 )
                 
     def _make_monoton(self, day_data: list[dict]) -> list[dict]:
+        """Ensure readings never decrease; small drops are clamped, large drops raise.
+
+        Args:
+            day_data: Sequence of records with keys ``time`` and ``value`` in chronological order.
+        Returns:
+            New list with non-decreasing values; raises if a large negative jump is detected.
+        """
         last_value = 0.0
         for idx, record in enumerate(day_data):
             record_value = record.get("value")
@@ -176,6 +202,14 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
 
 
     def _fill_with_zeroes(self, day_start_time: datetime, day_end_time: datetime) -> list[dict]:
+        """Backfill an empty day with hourly zeros between start and end boundaries.
+
+        Args:
+            day_start_time: Inclusive start timestamp (tz-aware UTC).
+            day_end_time: Exclusive end timestamp (tz-aware UTC).
+        Returns:
+            List of hourly zero-valued records spanning the day.
+        """
         correct_data = []
         current_time = day_start_time + timedelta(hours=1)
         while current_time < day_end_time:
@@ -184,6 +218,15 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
         return correct_data
 
     def _collect_range(self, day_data: list[dict], start_idx: int, end_idx: int) -> list[dict]:
+        """Slice the candidate reset window into a new list of dicts.
+
+        Args:
+            day_data: Full list of records.
+            start_idx: Index of first element (inclusive).
+            end_idx: Index of last element (inclusive).
+        Returns:
+            Copied slice of records to keep untouched.
+        """
         return [
             {"time": day_data[idx].get("time"), "value": day_data[idx].get("value")}
             for idx in range(start_idx, end_idx + 1)
@@ -192,6 +235,18 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
     def _adjust_first_reset(
         self, day: datetime, day_data: list[dict], first_reset_idx: int, second_reset_idx: int, day_end_time: datetime, day_start_time: datetime
     ) -> list[dict]:
+        """Move early reset (before midnight) onto midnight and interpolate leading points.
+
+        Args:
+            day: Current processing day (UTC naive anchor as datetime at midnight).
+            day_data: Full list of records spanning the window.
+            first_reset_idx: Index of first reset candidate.
+            second_reset_idx: Index of second reset candidate.
+            day_end_time: End-of-day timestamp (tz-aware UTC).
+            day_start_time: Start-of-day timestamp (tz-aware UTC).
+        Returns:
+            Normalized records with early reset moved to midnight.
+        """
         correct_data = []
         last_incorrect_idx = first_reset_idx
 
@@ -222,6 +277,18 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
     def _adjust_second_reset(
         self, day: datetime, day_data: list[dict], first_reset_idx: int, second_reset_idx: int, day_end_time: datetime, day_start_time: datetime
     ) -> list[dict]:
+        """Move late reset (after midnight) onto day end and interpolate trailing points.
+
+        Args:
+            day: Current processing day (UTC naive anchor as datetime at midnight).
+            day_data: Full list of records spanning the window.
+            first_reset_idx: Index of first reset candidate.
+            second_reset_idx: Index of second reset candidate.
+            day_end_time: End-of-day timestamp (tz-aware UTC).
+            day_start_time: Start-of-day timestamp (tz-aware UTC).
+        Returns:
+            Normalized records with late reset moved to end of day.
+        """
         correct_data = []
         first_incorrect_idx = None
 
@@ -253,6 +320,7 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
     def _adjust_both_resets(
         self, day: datetime, day_data: list[dict], first_reset_idx: int, second_reset_idx: int, day_end_time: datetime, day_start_time: datetime
     ) -> list[dict]:
+        """Normalize when both resets are misplaced by fixing the first then the second."""
         # First move the early reset to midnight and normalize the leading records
         first_corrected = self._adjust_first_reset(day, day_data, first_reset_idx, second_reset_idx, day_end_time, day_start_time)
         # Then move the late reset to the end of the day using the normalized list
