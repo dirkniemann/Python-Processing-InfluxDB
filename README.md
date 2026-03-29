@@ -134,3 +134,15 @@ Todo:
 - MQTT versenden über Status des Skripts, log bei error mitschicken
 - Szenerios für unterschiedliche Betteriegrößen
 - add tests
+- Fronius Wechselrichter in FENECON integrieren
+- Home Assistant kontrollieren dann, ob die Daten noch passen
+- Plan für Szenrios:
+	- fems_gridactivepower nehmen
+	- fems_esssoc für aktuelle Batterie
+	- fems_essdischargeower mit negativ für ladeleistung
+	- dann jeden schritt durchgehen und schauen, wie viel ist aktuelle batterei beladen (Umrechnung in kwH) und das auf die neue virtuelle Batterie addieren
+	- wenn was in netz exportiert wird schauen, ob essdischagepower schon sehr hoch ist oder ob noch mehr gehen würde, dann differenz zum max berechnen und auf die neue batterie aufaddieren
+	- pro tag schaune, starten mit soc von 0 oder letztem Wert vom Vortag
+	- wenn vom netz bezogen wird erst aus batterie nehmen, auch hier aktuelle batterie berücksichtigen
+	- wenn batterie leer nur aus netz
+	- dafür auch gridactivepower überarbeiten für die szenarios und eu reinschreiben
