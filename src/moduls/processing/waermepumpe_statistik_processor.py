@@ -10,7 +10,13 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
     """Processor for heat pump statistics entities."""
 
     def process(self) -> None:
-        """Process daily heat pump statistics for configured entities."""
+        """Process daily heat pump statistics for configured entities.
+
+        Args:
+            None
+        Returns:
+            None. Writes PV contribution and grid import per entity plus daily totals.
+        """
         logger.info(
             f"Processing {len(self.entities)} heat pump statistic entities (version: {self.version})"
         )
@@ -42,13 +48,25 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             measurement="fix_waermepumpe_stromverbrauch",
         )
 
+        if not last_version:
+            raise RuntimeError(
+                "No processed version found for fix_waermepumpe_stromverbrauch; cannot compute statistics"
+            )
+
         logger.info(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
 
         for day in days_to_process:
             self._process_day(day, last_version)
 
-    def _process_day(self, day: datetime, last_version: str) -> None:
-        """Process a single day's worth of heat pump data."""
+    def _process_day(self, day: datetime.date, last_version: str) -> None:
+        """Process a single day's worth of heat pump data.
+
+        Args:
+            day: Calendar day to process (date without tz).
+            last_version: Version tag of processed consumption data to read from.
+        Returns:
+            None. Writes per-interval PV/grid split, daily totals, and combined totals.
+        """
         logger.debug(f"Processing day {day} for heat pump statistics")
         day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
         day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=999999)))

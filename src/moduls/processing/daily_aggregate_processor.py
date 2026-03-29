@@ -10,7 +10,13 @@ class DailyAggregateProcessor(EntityProcessor):
     """Processor for daily aggregate entities."""
 
     def process(self) -> None:
-        """Process daily aggregate entities by calculating daily sums and writing to output bucket."""
+        """Calculate daily sums and write them to the output bucket.
+
+        Args:
+            None
+        Returns:
+            None. Writes per-entity daily sums plus a combined entity aggregate.
+        """
         logger.info(
             f"Processing {len(self.entities)} daily aggregate entities (version: {self.version})"
         )
@@ -44,11 +50,23 @@ class DailyAggregateProcessor(EntityProcessor):
             measurement="fix_waermepumpe_stromverbrauch",
         )
 
+        if not last_version:
+            raise RuntimeError(
+                "No processed version found for fix_waermepumpe_stromverbrauch; cannot aggregate daily sums"
+            )
+
         for day in days_to_process:
             self._process_day(day, last_version)
 
-    def _process_day(self, day: datetime, last_version: str) -> None:
-        """Process a single day for an entity."""
+    def _process_day(self, day: datetime.date, last_version: str) -> None:
+        """Process a single day for all configured entities.
+
+        Args:
+            day: Calendar day to aggregate.
+            last_version: Version tag to read source values from.
+        Returns:
+            None. Writes daily sums for each source entity and the configured output entity.
+        """
         sum_value = 0.0
         day_start_time = local_to_utc(datetime.combine(day, time(hour=0, minute=0, second=0, microsecond=0)))
         day_end_time = local_to_utc(datetime.combine(day, time(hour=23, minute=59, second=59, microsecond=999999)))

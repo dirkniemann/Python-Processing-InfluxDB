@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.influxdb_handler import LOCAL_TZ
@@ -9,27 +9,26 @@ from moduls.processing.fix_waermepumpe_stromverbrauch_processor import FixWaerme
 
 logger = logging.getLogger(__name__)
 
-def get_days_to_process(last_data_day: datetime) -> List[datetime]:
+def get_days_to_process(last_data_day: date) -> List[date]:
+    """Return all days between ``last_data_day`` (exclusive) and yesterday.
+
+    Args:
+        last_data_day: The most recent day already processed (date, no tz).
+    Returns:
+        Ordered list of calendar days that still need processing (may be empty).
+    Notes:
+        Processing happens on full calendar days; using plain ``date`` objects
+        keeps timezone handling simple and avoids mixing tz-aware datetimes with
+        date arithmetic.
     """
-    Get list of days that need to be processed.
-    Each day is properly localized to handle DST changes.
-    """
-    days_to_process = []
+    days_to_process: List[date] = []
     current_day = last_data_day + timedelta(days=1)
-    today = datetime.now().date()
-    yesterday = today - timedelta(days=1)
+    yesterday = datetime.now().date() - timedelta(days=1)
 
-    while current_day.date() <= yesterday:
-
-        if current_day.tzinfo is not None:
-            naive_day = current_day.replace(tzinfo=None)
-        else:
-            naive_day = current_day
-        
-        localized_day = LOCAL_TZ.localize(naive_day)
-        days_to_process.append(localized_day)        
+    while current_day <= yesterday:
+        days_to_process.append(current_day)
         current_day += timedelta(days=1)
-        
+
     return days_to_process
 
 class EntityProcessor:
@@ -56,7 +55,13 @@ class EntityProcessor:
         self.output_entity_id = output_entity_id
         
     def process(self) -> None:
-        """Process entities according to the strategy."""
+        """Process entities according to the strategy.
+
+        Args:
+            None
+        Returns:
+            None. Implementations should perform side effects (writes) only.
+        """
         raise NotImplementedError("Subclasses must implement process()")
 
 class HomeAssistantProcessor:
@@ -71,16 +76,15 @@ class HomeAssistantProcessor:
         processing_config: Dict[str, Any],
         first_data_day: datetime.date
     ):
-        """
-        Initialize the Home Assistant data processor.
-        
+        """Initialize the Home Assistant data processor.
+
         Args:
-            influx_handler: Connected InfluxDB handler instance
-            processing_config: Processing configuration containing input_bucket and output_bucket
-            first_data_day: The first day with data in the input bucket, used for processing logic
-            
+            influx_handler: Connected InfluxDB handler instance.
+            processing_config: Dict with ``input_bucket``, ``output_bucket``, and
+                ``entities_to_process`` describing processors and entities.
+            first_data_day: First day with available input data (date object).
         Raises:
-            ValueError: If required configuration keys are missing
+            ValueError: If required configuration keys or mandatory nested fields are missing.
         """
         self.influx_handler = influx_handler
         
@@ -243,9 +247,12 @@ class HomeAssistantProcessor:
             logger.warning("No valid entities found for Waermepumpe_statistik processor")
 
     def process_data(self) -> None:
-        """
-        Main method to process data from input bucket and write to output bucket.
-        Executes all configured processors.
+        """Run all configured processors in order.
+
+        Args:
+            None
+        Returns:
+            None. Side-effects: each processor performs its own writes.
         """
         logger.info("Starting data processing...")
         
