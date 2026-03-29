@@ -1,15 +1,25 @@
+# Status: Work in progress (WIP)
 
 # Python InfluxDB Data Processing
 
-A Python script that extracts data from InfluxDB (populated via Home Assistant), processes daily records, and writes results to a new bucket. Designed to run as a containerized application in Proxmox. Supports scenarios with large memory requirements for processing extensive datasets.
+Python tooling that reads Home Assistant metrics from InfluxDB, cleans and aggregates daily data, and writes results to a processed bucket. Runs as a scheduled task (cron) or containerized (e.g., Proxmox LXC). Designed to cope with larger datasets via day-by-day processing and explicit versioning of processed data.
 
+## What this does (solution overview)
+- **Data source**: Raw Home Assistant measurements in InfluxDB (input bucket).
+- **Processing pipeline** (in `src/moduls/processing`):
+	- `FixWaermepumpeStromverbrauchProcessor`: repairs heat-pump energy curves by detecting/resetting daily counters, enforcing monotonicity, and writing cleaned series to the output bucket with version tags.
+	- `DailyAggregateProcessor`: sums per-entity daily consumption into per-day aggregates plus a combined entity.
+	- `WaermepumpeStatistikProcessor`: splits consumption into PV vs. grid import per interval and writes interval + daily totals.
+- **Orchestration**: `HomeAssistantProcessor` wires processors based on `config/<stage>.json` and the first available data day. `main.py` handles CLI, logging, env loading, and lifecycle (connect, process, disconnect).
+- **Logging**: stage-aware console + file logging with rotation/cleanup (30 days) via `moduls.logger_setup`.
+- **Scheduling**: `get_days_to_process` selects unprocessed days up to yesterday to keep memory bounded and to retry missed days safely.
 
 ## Features
-
-- Retrieve data from InfluxDB for the previous day
-- Process and transform time-series data
-- Write processed data to a new InfluxDB bucket
-- Container-ready for Proxmox deployment
+- Retrieve raw data for previous/unprocessed days and process incrementally
+- Normalize time series (timezone-aware, daily boundaries, monotonic fixes)
+- Write cleaned data into a separate processed bucket with versioning
+- Daily aggregation and PV/grid split statistics
+- Container/cron friendly; stage-based configuration and .env secrets
 
 ## Setup
 
@@ -48,15 +58,20 @@ INFLUX_TOKEN=your-token
 INFLUX_ORG=your-org
 ```
 
+Stage config lives in `config/<stage>.json` (e.g., `dev.json`, `prod.json`) and defines:
+- `processing.input_bucket` / `processing.output_bucket`
+- `processing.entities_to_process` with processor names, versions, entity IDs, and measurements
+- `scenarios` (future use for storage simulations)
+
 ## Usage
 
 ### CLI arguments
 
 `python -m src.main` or `python src/main.py` accepts:
 
-- `--stage {dev,test,prod}` (default: `dev`) — selects config file `config/<stage>.json` and adjusts default log level (DEBUG for dev/test, WARNING for prod).
-- `--log-level {DEBUG,INFO,WARNING,ERROR}` — overrides the stage-based level.
-- `--log-file <path>` — custom log file location; defaults to `logs/<timestamp>.log`.
+- `--stage {dev,test,prod}` (default: `dev`) — selects config file `config/<stage>.json` and adjusts default log level (DEBUG for dev/test, INFO for prod).
+- `--log-level {DEBUG,INFO,WARNING,ERROR}` — override the stage-based level.
+- `--log-file <path>` — custom log file; defaults to `logs/<timestamp>.log`.
 
 Example:
 
@@ -69,6 +84,10 @@ python src/main.py --stage prod --log-level INFO --log-file logs/app_prod.log
 ```bash
 pytest
 ```
+
+## Logging
+- Console + file logging via `moduls.logger_setup`.
+- Default log dir: `logs/` (dev/test) or `/var/log/Python_Auswertung` (prod). Older than 30 days are removed.
 
 ## Proxmox LXC deployment
 
@@ -129,20 +148,37 @@ nano .env
 	./run_script.sh
 	```
 
+## How it is implemented (internals)
+- **Entry point**: `src/main.py` parses CLI, loads `.env`, selects stage config, sets up logging, and orchestrates connection/processing.
+- **Connection layer**: `moduls.influxdb_handler.InfluxDBHandler` wraps connect/disconnect, queries, writes, and date handling (Berlin tz -> UTC). Includes helpers for last/first day detection and version lookup.
+- **Processors** (configured via `entities_to_process`):
+  - `FixWaermepumpeStromverbrauchProcessor`: detects daily counter resets, inserts missing resets, clamps non-monotonic drops, writes cleaned series with version tag.
+  - `DailyAggregateProcessor`: pulls the latest cleaned version, sums daily values per entity and combined output, writes `daily_sum` fields.
+  - `WaermepumpeStatistikProcessor`: correlates consumption with grid power, splits kWh into PV vs. grid import, writes interval and daily totals.
+- **Scheduling**: `get_days_to_process` selects unprocessed days up to yesterday to keep memory usage bounded.
+- **Logging**: root logger configured once; console + file handler, cleanup of old logs.
 
-Todo:
-- MQTT versenden über Status des Skripts, log bei error mitschicken
-- Szenerios für unterschiedliche Betteriegrößen
-- add tests
-- Fronius Wechselrichter in FENECON integrieren
-- Home Assistant kontrollieren dann, ob die Daten noch passen
-- Plan für Szenrios:
-	- fems_gridactivepower nehmen
-	- fems_esssoc für aktuelle Batterie
-	- fems_essdischargeower mit negativ für ladeleistung
-	- dann jeden schritt durchgehen und schauen, wie viel ist aktuelle batterei beladen (Umrechnung in kwH) und das auf die neue virtuelle Batterie addieren
-	- wenn was in netz exportiert wird schauen, ob essdischagepower schon sehr hoch ist oder ob noch mehr gehen würde, dann differenz zum max berechnen und auf die neue batterie aufaddieren
-	- pro tag schaune, starten mit soc von 0 oder letztem Wert vom Vortag
-	- wenn vom netz bezogen wird erst aus batterie nehmen, auch hier aktuelle batterie berücksichtigen
-	- wenn batterie leer nur aus netz
-	- dafür auch gridactivepower überarbeiten für die szenarios und eu reinschreiben
+## Tests implemented
+- `tests/test_main.py`: fakes Influx handler/processor to ensure CLI wiring and exit code success.
+- `tests/test_influxdb_handler.py`: timezone conversion round-trip, connection using fakes, last datapoint retrieval, write path, UTC conversion in queries, and None handling when no data exists.
+- `tests/test_logger_setup.py`: logger creation writes a file and cleans up old logs.
+- `tests/test_homeassistant_processing.py`: processor wiring from config, config validation, required output entity enforcement, and date-based day selection.
+- `tests/test_config_prod.py`: structural checks for `config/prod.json` (processing buckets, entities, scenarios base data).
+- `tests/test_intentional_failures.py`: marked xfail to illustrate failure reporting (kept for CI visibility).
+
+## Roadmap / TODO
+- Publish MQTT status for each run and include logs on errors
+- Add scenarios for different battery sizes
+- Add more tests (integration/processing flow)
+- Integrate Fronius inverter data into FENECON flow
+- Cross-check processed data against Home Assistant for consistency
+- Scenario plan:
+	- Use `fems_gridactivepower` as grid signal
+	- Use `fems_esssoc` for current battery SoC
+	- Use `fems_essdischargepower` (negative for charge power)
+	- Iterate each step: compute current battery energy (kWh) and add to virtual battery
+	- When exporting to grid, check if `essdischargepower` is already high; compute remaining headroom and add to virtual battery
+	- Per day: start with SoC 0 or carry over last day’s SoC
+	- When importing from grid, draw from battery first; respect current battery constraints
+	- If battery empty, draw from grid only
+	- Adjust `gridactivepower` for scenarios and persist
