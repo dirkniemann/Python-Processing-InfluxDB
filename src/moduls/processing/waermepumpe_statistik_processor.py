@@ -19,7 +19,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             bucket=self.output_bucket,
             entity_id=self.output_entity_id,
             version=self.version,
-            field="daily_sum_pv",
+            field="daily_pv",
             measurement=self.output_measurement,
         )
 
@@ -83,14 +83,13 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
 
                 kWh_diff = stop_value - start_value
                 import_kwh = 0.0
-
+                grid_duration_hours = 0.0
                 for grid_idx, grid_record in enumerate(grid_active_power):
-                    grid_start_time = record.get("time")
+                    grid_start_time = grid_record.get("time")
                     if grid_idx + 1 < len(grid_active_power):
                         grid_stop_time = grid_active_power[grid_idx + 1].get("time")
                     else:
                         break
-                    grid_stop_time = grid_record.get("time")
 
                     if grid_start_time >= stop_time:
                         break
@@ -100,12 +99,14 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                     duration_hours = (grid_stop_time - grid_start_time).total_seconds() / 3600.0
                     if duration_hours <= 0:
                         continue
-
+                    grid_duration_hours += duration_hours
                     power_w = grid_record.get("value", 0)
                     energy_kwh = (power_w * duration_hours) / 1000.0
 
                     if power_w >= 0:
                         import_kwh += energy_kwh
+                pump_duration_hours = (stop_time - start_time).total_seconds() / 3600.0
+                import_kwh = import_kwh * (pump_duration_hours / grid_duration_hours) if grid_duration_hours > 0 else 0.0
                 if import_kwh == 0:
                     waermepumpe_pv = kWh_diff
                     waermepumpe_grid = 0.0
