@@ -35,6 +35,7 @@
     "scenarios": {
         "setup": {
             "bucket": "testing",
+            "input_bucket": "HomeAssistant",
             "base_storage_capacity_kWh": 22.4,
             "base_charging_power_kW": 17.92
         },
