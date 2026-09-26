@@ -168,17 +168,152 @@ nano .env
 
 ## Roadmap / TODO
 - Publish MQTT status for each run and include logs on errors
-- Add scenarios for different battery sizes
-- Add more tests (integration/processing flow)
 - Integrate Fronius inverter data into FENECON flow
 - Cross-check processed data against Home Assistant for consistency
-- Scenario plan:
-	- Use `fems_gridactivepower` as grid signal
-	- Use `fems_esssoc` for current battery SoC
-	- Use `fems_essdischargepower` (negative for charge power)
-	- Iterate each step: compute current battery energy (kWh) and add to virtual battery
-	- When exporting to grid, check if `essdischargepower` is already high; compute remaining headroom and add to virtual battery
-	- Per day: start with SoC 0 or carry over last day’s SoC
-	- When importing from grid, draw from battery first; respect current battery constraints
-	- If battery empty, draw from grid only
-	- Adjust `gridactivepower` for scenarios and persist
+- Die priorisierten nächsten Schritte für Wärmepumpen-Auswertung und Batteriespeicher-Konzept stehen im Abschnitt [Aktueller Stand und To Do](#aktueller-stand-und-to-do).
+
+## Aktueller Stand und To Do
+
+Dieser Abschnitt ist die Arbeitsanweisung für die nächste Umsetzung. **Derzeit wurde noch keine der hier beschriebenen Codeänderungen umgesetzt.** Read-only InfluxDB-Abfragen über `.env_agent` wurden auf kurze, gezielte Zeiträume begrenzt; die folgenden Einheiten, Punktzahlen und Zeitabstände sind Bestandsindikatoren, keine vollständige Validierung der Gerätesemantik.
+
+### Ist-Stand der Wärmepumpen-Auswertung
+
+- `fix_waermepumpe_stromverbrauch` bereinigt die Tageszählerstände beider Wärmepumpen und schreibt sie als `value` in kWh.
+- `Waermepumpe_statistik` verarbeitet die zwei Zähler und `fems_gridactivepower`. Die aktuelle Implementierung berechnet den Netzanteil für jede Wärmepumpe unabhängig. Dadurch kann die Summe beider Zuordnungen größer als der gesamte Netzbezug werden.
+- Die aktuelle Berechnung behandelt Grid-Werte als Watt und teilt durch 1000. Diese Annahme ist nicht durch Code oder Konfiguration abgesichert.
+- Die Statistik interpretiert die Rollen über Listenpositionen: Einträge 0 und 1 sind die Pumpen, Eintrag 2 ist das Netzsignal.
+- Kompressor-Binary-Sensoren werden aktuell nicht abgefragt oder verwendet.
+- Die bestehende `pv_contribution` ist ein rechnerischer Rest nach Abzug des geschätzten Netzanteils. Sie ist kein direkt gemessener PV-Stromfluss zur Wärmepumpe.
+
+In InfluxDB sind laut Nutzer folgende Change-Only-Sensoren vorhanden:
+
+| Rolle | Measurement | Entity | Feld / Werte |
+| --- | --- | --- | --- |
+| Kompressor 1 | `binary_sensor.e3_vitocal_kompressor` | `e3_vitocal_kompressor` | `value`: 0 = aus, 1 = an |
+| Kompressor 2 | `binary_sensor.e3_vitocal_kompressor_2` | `e3_vitocal_kompressor_2` | `value`: 0 = aus, 1 = an |
+
+Measurement-Namen sind in InfluxDB case-sensitive. Vor einer Änderung gegen die tatsächliche Schreibweise im Bucket prüfen. Die Sensoren schreiben nur Zustandsänderungen; ein Zustand gilt bis zum nächsten Ereignis. Ein erster Wert `1` innerhalb eines Abfragefensters beweist nicht, dass der Kompressor genau zu diesem Zeitpunkt eingeschaltet wurde.
+
+### InfluxDB-Bestandsprüfung
+
+Am 2026-09-26 wurden read-only Abfragen mit dem ausdrücklich dafür vorgesehenen `.env_agent`-Zugang ausgeführt. Die normale `.env` wurde nicht gelesen oder verwendet. Auf Nutzerwunsch beschränkt sich die erste Inventur auf **14 Tage** und gibt nur Metadaten/Punktzahlen aus. Zeitprofile und Wertzusammenfassungen wurden anschließend gezielt auf relevante Entities und sieben Tage begrenzt; eine einzelne Plausibilitätsprobe verwendete einen Tag mit Stundenmitteln sowie einen einminütigen Snapshot.
+
+Die Home-Assistant-Reihen verwenden hier überwiegend die **Einheit als Measurement** und nicht als Unit-Tag: Leistungsreihen liegen im Measurement `W`, die Wärmepumpenzähler im Measurement `kWh`. Das Influx-Tag `unit` war bei diesen Reihen leer. Das SOC-Measurement wurde wörtlich als `„%“` ausgegeben und sollte vor Konfigurationsfestlegung noch auf exakte Schreibweise geprüft werden.
+
+| Signal | Measurement | Entity | Field | Beobachtung im 14-Tage-Fenster |
+| --- | --- | --- | --- | ---: |
+| Hausverbrauchsleistung (bekannt fehlerhaft, nicht als Bilanzquelle verwenden) | `W` | `elektrischer_verbrauch` | `value` | 129.5k Punkte |
+| Netzleistung | `W` | `fems_gridactivepower` | `value` | 119.4k Punkte |
+| PV-Leistung | `W` | `fems_productiondcactualpower` | `value` | 70.7k Punkte |
+| PV-Leistung, neue Anlage | `W` | `mt_stall_neu_leistung_ac_fixed` | `value` | 10.0k Punkte |
+| PV-Leistung, alte Anlage 1 | `W` | `mt_stall_alt_1_leistung_ac_fixed` | `value` | 10.0k Punkte |
+| PV-Leistung, alte Anlage 2 | `W` | `mt_stall_alt_2_leistung_ac_fixed` | `value` | 10.2k Punkte |
+| Batterie-Leistung (bidirektional) | `W` | `fems_essdischargepower` | `value` | 84.0k Punkte |
+| Batterie-SOC | `„%“` | `fems_esssoc` | `value` | 2.7k Punkte |
+| Wärmepumpe 1 Tageszähler | `kWh` | `e3_vitocal_heizung_stromverbrauch_heute` | `value` | 895 Punkte |
+| Wärmepumpe 2 Tageszähler | `kWh` | `e3_vitocal_heizung_stromverbrauch_heute_2` | `value` | 1.14k Punkte |
+| Kompressor 1 | `binary_sensor.e3_vitocal_kompressor` | `e3_vitocal_kompressor` | `value`, zusätzlich `state` | je 176 Punkte |
+| Kompressor 2 | `binary_sensor.e3_vitocal_kompressor_2` | `e3_vitocal_kompressor_2` | `value`, zusätzlich `state` | je 243 Punkte |
+
+Damit sind die in der Nutzerangabe genannten Kompressoren vorhanden, aber die tatsächliche zweite Measurement-Schreibweise ist **kleingeschrieben** `binary_sensor.e3_vitocal_kompressor_2` (nicht `Binary_Sensor_E3_Vitocal_Kompressor_2`). Für die numerische 0/1-Zeitreihe ist `value` vorhanden; `state` ist ebenfalls gespeichert, wurde aber nicht als Zahl ausgewertet. Die `value`-Felder beider Kompressoren enthalten im betrachteten Fenster beide Zustände 0 und 1.
+
+Weitere gefundene passende Reihen waren drei `climate.e3_vitocal_heizung*`-Entities (Field `state`), ein Außentemperatursensor in `°C` sowie zwei Gas-Tageszähler in `kWh`. Im kurzen Inventar wurde kein separat benannter Batterie-Ladesensor, kein eigener Einspeisezähler und kein weiterer expliziter Netzbezugssensor gefunden. `fems_gridactivepower` ist vorzeichenbehaftet und kann vermutlich Bezug/Einspeisung abbilden; diese Annahme sollte gegen Geräte-/Entity-Metadaten bestätigt werden.
+
+#### Zeitabstände und Lückenindikatoren
+
+Die Median-/Maximalabstände unten wurden aus Ereigniszeitstempeln über sieben Tage berechnet. Maximalabstand bedeutet zunächst nur „Abstand zwischen gespeicherten Punkten“; bei Change-Only-Reihen ist er keine automatische Datenlücke.
+
+| Signal | Medianabstand | Größter Abstand | Einordnung |
+| --- | ---: | ---: | --- |
+| `elektrischer_verbrauch` | 10 s | 30 min 40 s | gewöhnlich häufig, einzelne lange Stille auffällig |
+| `fems_gridactivepower` | 10 s | 30 min 40 s | gewöhnlich häufig, lange Lücke für Zuordnung ungültig behandeln, bis Semantik geprüft ist |
+| `fems_productiondcactualpower` | 10 s | 2 h 48 min 13 s | lange Nacht-/Datenlücke nicht ohne Sensorsemantik als Null interpretieren |
+| `fems_essdischargepower` | 5 s | 13 h 28 min 13 s | mögliche Zustands-/Änderungsreihe; lange Zeit ohne Punkt darf nicht als 0 gelten |
+| `fems_esssoc` | 2 min | 14 h 23 min 35 s | SOC-Verlauf hat deutliche Lücken für Tages- oder Simulationsbilanzen |
+| WP1-Zähler | 6 min 29 s | 15 h 31 min 2 s | Zählerdifferenz über solche langen Intervalle zeitlich nicht präzise aufteilbar |
+| WP2-Zähler | 6 min 30 s | 14 h 18 min 1 s | wie WP1 |
+| Kompressor 1 Change-Only | 39 min | 18 h 9 min 2 s | lange Abstände sind bei unverändertem Zustand plausibel |
+| Kompressor 2 Change-Only | 45 min 29 s | 22 h 38 min 32 s | lange Abstände sind bei unverändertem Zustand plausibel |
+
+Vor dem 7-Tage-Profil lag der letzte Kompressor-1-Wert `0` 13.07 Stunden und der letzte Kompressor-2-Wert `1` 8.82 Stunden zurück. Die Zustände müssen daher über den Profilbeginn hinweg fortgeschrieben werden. Bei diesen ausdrücklich Change-Only-Sensoren darf ein langer Abstand allein den Zustand **nicht** auf `unknown` setzen; `unknown` gilt vor dem ersten bekannten Zustand bzw. bei nachgewiesenem Recorder-/Retention-Verlust.
+
+#### Vorzeichen und Plausibilitätscheck
+
+Im Stundenmittel des 25.09.2026 (UTC) war `fems_gridactivepower` nachts positiv (z. B. etwa +5.8 kW bei rund 36 W PV) und bei hoher PV-Leistung negativ (z. B. etwa −17.3 kW bei rund 20.6 kW PV). Das stützt die Konvention **positiv = Netzbezug, negativ = Einspeisung**. Die Extremwerte der letzten sieben Tage waren −25.501 kW bis +13.864 kW.
+
+`fems_essdischargepower` lag zwischen −17.041 kW und +15.108 kW. Am selben Tag stieg der SOC bei negativer Batterieleistung von etwa 12.5 % auf 96.6 % und fiel bei positiver Leistung wieder bis etwa 14 %. Das stützt **negativ = Laden, positiv = Entladen**. Ein separater Ladesensor ist im kurzen Kandidateninventar nicht sichtbar. Laut ergänzender Nutzerinformation ist `elektrischer_verbrauch` bereits an der Quelle fehlerhaft und wird teilweise negativ. Diese Reihe darf daher nicht als Eingangsgröße für die Lastbilanz oder Wärmepumpenzuordnung dienen; sie kann allenfalls als Diagnose-/Vergleichssignal erhalten bleiben.
+
+Der einminütige Snapshot um 10:00 UTC zeigte innerhalb derselben Minute: das inzwischen als fehlerhaft bekannte Signal `elektrischer_verbrauch` `12.349 kW`, Grid `−14.156 kW`, PV `21.730 kW`, Batterieleistung `−3.584 kW` (Batteriemessung lag rund 31 s früher) und SOC `56 %`. Wegen des Quellfehlers ist der Verbrauchswert für die Bilanz nicht belastbar; außerdem schließt die einfache Bilanz mit diesen nicht exakt synchronisierten Signalen nicht. Die kurze Influx-Inventur bestätigt jetzt auch alle drei `mt_stall_*_leistung_ac_fixed`-Entities im Measurement `W`. Laut Nutzerinformation speisen die beiden `mt_stall_alt_*`-Anlagen derzeit vollständig ein und laden die Batterie nicht. Vor Batterie-Simulation und PV-/Netz-Zuordnung müssen daher die Systemgrenze, DC-/AC-Bezug von `fems_productiondcactualpower`, Zeitsynchronität und das Verhalten der alten PV-Anlagen ausdrücklich modelliert werden.
+
+Für eine spätere Energiebilanz muss zwischen **gesamter Erzeugung** und **lokal nutzbarer Erzeugung** unterschieden werden. Sofern alle Signale dieselbe AC-Systemgrenze abdecken und zeitlich ausgerichtet sind, lautet die zu prüfende Brutto-Lastbilanz `Hauslast = vorzeichenbehaftete Netzleistung + vorzeichenbehaftete Batterieleistung + gesamte PV-Erzeugung hinter dem Netz-Zähler`. Vorläufig gilt `Grid > 0` = Bezug, `Grid < 0` = Einspeisung sowie Batterie `> 0` = Entladung, `< 0` = Laden. Die alten PV-Anlagen gehören gegebenenfalls zur Gesamtproduktion für diese Bilanz, dürfen laut aktuellem Anlagenbetrieb aber **nicht** als lokal verfügbare PV oder Batterie-Ladequelle für Szenarien gezählt werden; ihre gemessene Leistung ist als feste Einspeisung zu behandeln. Ob diese Abgrenzung und Bilanzgleichung für die konkreten Messpunkte gilt, muss anhand der Anlagenmetadaten bestätigt werden. PV-Leistungen dürfen weder blind addiert noch doppelt gezählt werden.
+
+Die Messwerte (`W`, `kWh`, SOC und Binärzustände) sind Influx-Eingaben. Ein aus Zählerständen abgeleiteter Intervallverbrauch und seine Netz-/PV-Aufteilung bleiben abgeleitete bzw. geschätzte Werte. Das gilt besonders, wenn ein Zähler bis zu 15 Stunden zwischen Punkten und ein Kompressor bis zu 23 Stunden zwischen Zustandswechseln hat.
+
+**Vor Beginn der Prio-1-Implementierung gezielt noch klären:** (1) Grid-Leistungsvorzeichen und genaue Messpunkt/Systemgrenze anhand Gerätemetadaten bestätigen; (2) ob `fems_productiondcactualpower` DC-Generatorleistung und nicht AC-seitige PV-Leistung am Hausbus ist; (3) Bedeutung, AC/DC-Seite, Vorzeichen und Systemgrenze von `mt_stall_neu_leistung_ac_fixed` sowie beiden Alt-Anlagen verifizieren; (4) exakte SOC-Measurement-Zeichenfolge `„%“`; (5) ob Grid-, PV- und Batterie-Leistungsreihen regelmäßig periodisch schreiben oder nur bei Änderungen und wie lange Werte fortgeschrieben werden dürfen; (6) ob lange Zählerabstände echte Recorder-Lücken, seltene Zähleränderungen oder beides sind. `elektrischer_verbrauch` ist laut Nutzer bereits an der Quelle fehlerhaft und teilweise negativ: ihn nicht zur Lastberechnung verwenden und nicht versuchen, negative Werte einfach auf null zu begrenzen. Für Change-Only-Kompressoren ist die Ereignisfreiheit laut Nutzer die Zustandssemantik und kein alleiniger Lückenbeweis.
+
+Die read-only Hilfsabfrage und ihre gestufte Bedienung sind unter [`tools/influx_audit`](tools/influx_audit/README.md) beschrieben. Das Skript liest ausschließlich `INFLUX_URL`, `INFLUX_TOKEN` und `INFLUX_ORG` aus `.env_agent`, gibt keine Credential-Werte aus und speichert keine Rohmessdaten.
+
+### Priorität 1 – Wärmepumpen-Auswertung stabilisieren
+
+Die folgende Arbeit zuerst und ohne Batterie-Szenariocode umsetzen:
+
+1. **Konfiguration explizit machen.** Die Statistik-Konfiguration soll Rollen statt einer geordneten `entities`-Liste enthalten, zum Beispiel `heat_pump_1`, `heat_pump_2`, `grid_power`, `compressor_1` und `compressor_2`. Pro Rolle mindestens `measurement`, `entity_id`, `field` und erwartete `unit` angeben. Zählerrollen sind als Energie in `kWh`, Netzleistung als explizit festgelegtes `W` oder `kW`, Kompressorstatus als dimensionsloser Zustand mit erlaubten Werten 0/1 zu validieren. Keine Rolle aus einem Listenindex ableiten.
+2. **Konfiguration beim Start validieren.** Pflichtrollen, nichtleere Strings, erlaubte Einheiten, eindeutige Sensorreferenzen, gültige Feldnamen und plausible Grenzwerte (z. B. maximale zulässige Signallücke) prüfen. Fehlende oder doppelt belegte Rollen müssen mit verständlicher Fehlermeldung abbrechen. Die bestehende `entities`-Liste für die Zählerbereinigung kann davon getrennt bleiben; die Statistik darf sie nicht zur Rollenzuordnung verwenden.
+3. **Einheiten zentral normalisieren.** Rohwerte aus `grid_power` anhand der Konfiguration genau einmal in kW umrechnen. Bei fehlender oder unbekannter Einheit abbrechen. Falls die Influx-Reihe keine Unit-Metadaten enthält, ist die Konfiguration die verbindliche Deklaration; die reale Sensor-Unit muss vor dem produktiven Aktivieren manuell bestätigt werden. Zählerwerte vor Differenzbildung auf kWh prüfen. Kompressorwerte außerhalb 0/1 als Datenfehler markieren und nicht stillschweigend interpretieren.
+4. **Zeitachse und Change-Only-Zustände aufbereiten.** Für beide Kompressor-Reihen den letzten Zustand vor Intervallbeginn sowie alle Änderungen im Intervall laden. Den letzten Zustand über beliebig lange ereignisfreie Zeit bis zur nächsten Änderung fortschreiben; bei Change-Only-Reihen ist ein langer Eventabstand für sich keine Datenlücke. `unknown` gilt nur, wenn im verfügbaren Datenbestand kein vorheriger Zustand existiert oder ein Recorder-/Retention-Verlust bekannt ist. Wenn der erste bekannte Messpunkt erst nach Intervallbeginn liegt und kein Vorgänger abgefragt werden kann, bleibt die Zeit davor `unknown`; nicht rückwirkend `1` annehmen. Abfragegrenzen müssen ausreichend Vorlauf für den letzten bekannten Zustand enthalten.
+5. **Gemeinsame Zeitintervalle bilden.** Die Zeitpunkte beider bereinigter Zähler, beider Kompressorereignisse und der Netzleistungsmessung als Grenzen verwenden. Das Netzsignal gilt gemäß bestätigter Sensorsemantik bis zum nächsten Messpunkt; bei zu großer Lücke gilt es als unbekannt. Zählerdifferenzen bleiben die primäre gemessene Energie. Da sie nur zwischen zwei Messpunkten bekannt ist, darf eine Verteilung innerhalb dieses Intervalls höchstens als Schätzung ausgewiesen werden.
+6. **Gemeinsame, deterministische Zuordnung berechnen.** Je gemeinsamem Teilintervall nur den positiven Netzbezug als verfügbares Netzbudget verwenden; Einspeisung ergibt kein positives Budget. Als Nachfragegewicht je aktiver Wärmepumpe dient deren aus Zählerdifferenz und Intervalllänge abgeleitete mittlere Leistung. Wenn beide Kompressoren laufen, das Netzbudget proportional zu diesen beiden Gewichten aufteilen. Wenn nur eine Pumpe nachweislich läuft, darf nur sie Netzanteil erhalten. Wenn beide aus sind, keine Wärmepumpenenergie ableiten. Immer begrenzen: `WP1_grid + WP2_grid <= max(grid_import, 0)`; außerdem je Pumpe `0 <= grid <= gemessene Pumpenenergie`. Rundung erst nach der Aufteilung, damit sie die Summenbedingung nicht verletzt. Bei gleichen Gewichten erfolgt die Aufteilung gleich; keine feste Pumpenpriorität.
+7. **Messung und Schätzung getrennt halten.** Zählerdifferenzen, Netzleistung und Kompressorereignisse sind Eingabemessungen. Bereinigte Zählerwerte bleiben als solche nachvollziehbar. Die zeitliche Zuteilung einer Zählerdifferenz auf feinere Teilintervalle sowie die Pro-rata-Netzaufteilung sind abgeleitete Schätzungen. Ergebnisse benötigen mindestens einen Qualitäts-/Gültigkeitsindikator oder ein zusätzliches Feld für nicht zuordenbare Energie. Eine fehlende Netz- oder Kompressormessung darf nicht als `0` behandelt und der Rest nicht automatisch als bestätigter PV-Anteil ausgegeben werden.
+8. **Widersprüche und Lücken explizit behandeln.** Kompressor `0` bei steigenden Zählerständen: gemessenen Zähleranstieg erhalten, Konflikt markieren und nicht als Kompressor-bedingten Verbrauch oder bestätigten PV-Anteil ausgeben. Kompressor `1` ohne Zähleranstieg: keine Energie erfinden; optional lange Laufzeit ohne Zähleränderung als Qualitätswarnung markieren. Lücken über Grenzwert bei Grid, Kompressor oder Zähler: betroffene Zuordnung als ungültig/unbekannt markieren, protokollieren und nicht stillschweigend mit null oder Extrapolation füllen. Ein Tageswert muss erkennen lassen, wenn Teilintervalle ungültig oder unklassifiziert waren.
+9. **Datenmodell und Versionsführung prüfen.** Bestehende Feldnamen (`pv_contribution`, `grid_import`, `daily_pv`, `daily_grid_import`) nicht ohne Migrations-/Abwärtskompatibilitätsentscheidung umdeuten. Ggf. `unclassified_energy`, Qualitätsflags und eine neue Berechnungsversion ergänzen. Daily totals müssen aus den tatsächlich geschriebenen Intervallwerten entstehen. Eine erneute Tagesverarbeitung muss idempotent sein oder alte Resultate einer Version gezielt ersetzen.
+10. **Tests ergänzen und ausführen.** Die reine Zuordnungsfunktion separat testbar halten. Mindestens prüfen: 5 kW Grid / WP1 3 kW / WP2 0 → WP1 3 kW; 0,5 kW / WP1 4 kW → Grid 0,5 kW und Rest nicht mehr als Grid; 2 kW / 1,5 kW je Pumpe → gemeinsame Summe höchstens 2 kW; 5 kW / 1,5 kW je Pumpe → je 1,5 kW; nur WP1 aktiv; nur WP2 aktiv; beide aktiv mit proportionaler Regel; beide aus → keine Energie; Change-Only-Zustand gilt bis zum nächsten Wechsel; unbekannter Anfangszustand und veralteter Zustand; ungültige Einheit und Sensorrollen unabhängig von Konfigurationsreihenfolge; Datenlücken und widersprüchliche Zähler-/Kompressorsignale. Danach vollständige Testsuite ausführen.
+
+**Interpolation:** Keine lineare Interpolation als vermeintliche Messung speichern. Falls Zählerdifferenzen für die Intervallzuordnung auf Teilintervalle verteilt werden müssen, ist eine konstante mittlere Leistung zwischen zwei gültigen Zählerpunkten eine nachvollziehbare Schätzung. Kompressor-An/Aus-Ereignisse begrenzen diese Schätzung zeitlich, liefern aber selbst keine elektrische Leistung. Die Schätzung muss markiert werden. Vor Implementierung anhand realer Zeitabstände entscheiden, ab welcher Zählerlücke keine Verteilung mehr zulässig ist.
+
+**Vor Implementierung anhand echter Daten klären:** (a) Einheit und Vorzeichen von `fems_gridactivepower`, insbesondere ob positiver Wert Netzbezug bedeutet; (b) tatsächliche Schreibweise beider Binary-Measurements und ob `entity_id`/`_field` wie angegeben vorhanden sind; (c) Units und Updateabstände beider Wärmepumpenzähler; (d) typische/maximale Abstände und eventuelle Retention der drei Signalgruppen; (e) ob Netzsignal tatsächlich den gesamten Haus-Netzfluss abbildet und wie Batterie-Laden/Entladen darin enthalten ist; (f) wie unklassifizierte Energie und widersprüchliche Messungen in Grafana dargestellt werden sollen. Ohne diese Bestätigung bleibt jede Zuordnung eine Schätzung.
+
+### Priorität 2 – Datenqualität und Reproduzierbarkeit
+
+Nach Stabilisierung der Zuordnung:
+
+- Zeitauflösung, Zeitzone, Tagesgrenzen und Intervallsemantik je Signal dokumentieren; Sommerzeitwechsel ausdrücklich berücksichtigen.
+- Zähler-Resets und fehlende Tagesgrenzen robust erkennen; keine fehlenden Messwerte ohne Kennzeichnung synthetisch ergänzen.
+- Lücken, doppelte/out-of-order Messpunkte, negative Differenzen und stale Zustände mit Qualitätsstatus und nachvollziehbaren Logs behandeln.
+- Tagesläufe reproduzierbar und idempotent gestalten. Verarbeitungszeitraum, Eingabestand und Berechnungsversion nachvollziehbar halten.
+- Gemessene, bereinigte, abgeleitete und geschätzte Reihen/Felder trennbar benennen und dokumentieren.
+- Reale Tagesausschnitte nach Bestätigung der Datensemantik gegen manuelle Plausibilitätsprüfungen und die Energieflussbilanz abgleichen.
+- `elektrischer_verbrauch` wegen des bekannten Quellfehlers nicht als Messgrundlage verwenden; Fehlerwerte weder stillschweigend clippen noch als Verbrauch interpretieren. Als unabhängiges Diagnose-Signal nur kennzeichnen, bis die Quelle repariert ist.
+
+### Priorität 3 – Batteriespeicher-Simulation (nur Konzept, später implementieren)
+
+**In diesem Arbeitsschritt keine Batteriesimulation, keinen Szenario-Prozessor, keine Szenario-Measurements, keine Wirtschaftlichkeitsberechnung, kein Grafana-Dashboard und keine Batterieoptimierung bauen.** Erst beginnen, wenn Wärmepumpen-Auswertung und zeitliche Energiebilanz belastbar sind.
+
+Geplanter Datenfluss:
+
+```text
+Home Assistant
+      ↓
+InfluxDB-Rohdaten
+      ↓
+Datenaufbereitung und Qualitätsprüfung
+      ↓
+zeitlich ausgerichtete Energiebilanz
+      ↓
+Batteriesimulation in Python
+      ↓
+versionierte Szenario-Ergebnisse
+      ↓
+InfluxDB
+      ↓
+Grafana
+```
+
+Vor der Simulation müssen PV-Leistung/-Erzeugung, Gesamtverbrauch, Netzbezug, Einspeisung, Batterie-SOC, Lade- und Entladeleistung, Wärmepumpenverbrauch und relevante weitere Verbraucher auf gemeinsame Zeitintervalle gebracht und Einheiten/Vorzeichen bestätigt werden. `elektrischer_verbrauch` ist dafür wegen des Quellfehlers ungeeignet; die Hauslast muss aus validierten Flussmessungen und einer bestätigten Systemgrenze rekonstruiert oder über eine geeignete alternative Messung bezogen werden. Die real gemessene Batterie soll als Referenz zur Kalibrierung und Validierung dienen; Baseline und alternative Speicher sollten mit derselben Modelllogik simuliert werden, damit Szenarien vergleichbar sind. Die Betriebsstrategie des realen Speichers muss dabei so gut wie möglich berücksichtigt werden.
+
+**PV-Szenarien für die beiden alten Anlagen:** Die Inventur findet `mt_stall_alt_1_leistung_ac_fixed` und `mt_stall_alt_2_leistung_ac_fixed` (beide `W`) sowie `mt_stall_neu_leistung_ac_fixed` (`W`). Laut Nutzer wird die alte Anlage derzeit vollständig eingespeist und lädt die Batterie nicht. Szenarien müssen deshalb mindestens zwei klar getrennte Varianten rechnen: (A) heutiger Betrieb mit alter PV als fest eingespeister Erzeugung, ohne lokale Nutzung/Ladung durch diese Anlagen; (B) Vergleich ohne `mt_stall_alt`-Erzeugung. Variante B darf nicht so interpretiert werden, als wäre die alte PV für Eigenverbrauch verfügbar; zusätzlich muss der entgangene Einspeiseerlös in den Wirtschaftlichkeitsvergleich eingehen. Eine mögliche spätere Änderung der Verschaltung, bei der alte PV lokal genutzt oder zum Laden verfügbar wäre, ist ein eigenes drittes Szenario und muss durch reale Anlagenkonfiguration gestützt sein. `fems_productiondcactualpower` und `mt_stall_neu_leistung_ac_fixed` sind zunächst Kandidaten für lokal verfügbare PV, aber ihre Systemgrenze und tatsächliche Kopplung zur Batterie sind vor Nutzung zu bestätigen.
+
+Szenarioparameter: nutzbare Speicherkapazität, maximale Lade- und Entladeleistung, Lade-/Entladewirkungsgrad, minimale/maximale SOC-Grenze, Betriebsstrategie, Strompreis, Einspeisevergütung und Investitionskosten. Modellversion und Parameter pro Lauf dauerhaft nachvollziehbar speichern.
+
+Zu erzeugende Kennzahlen: Lade-/Entladeenergie und Verluste, SOC, zusätzlicher Eigenverbrauch, vermiedener Netzbezug, zusätzliche Einspeisung, wirtschaftlicher Nettoeffekt gegenüber der Baseline, Stromkosten, Einspeiseerlöse und Amortisationsdauer. Wirtschaftlichkeit muss Nutzen aus vermiedenem Netzbezug gegen entgangene Einspeisevergütung, Verluste und Investitionskosten abwägen. Eine größere Batterie ist nicht automatisch sinnvoll: zusätzliche Kapazität zählt nur, wenn sie tatsächlich geladen und die gespeicherte Energie später genutzt werden kann.
+
+Python soll Zeitreihenaufbereitung, Simulation und reproduzierbare Intervallberechnungen übernehmen. InfluxDB eignet sich für Zeitreihen und Grafana-Abfragen; Szenarioparameter/Laufmetadaten müssen zusätzlich versioniert nachvollziehbar bleiben. Grafana soll Auswahl, Aggregation und Szenariovergleich übernehmen, keine komplexe Batteriephysik.
