@@ -1,6 +1,6 @@
 import logging
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from moduls.influxdb_handler import LOCAL_TZ, local_to_utc
 from moduls.processing.HomeAssistant_processor import EntityProcessor, get_days_to_process
@@ -21,7 +21,14 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
         first_data_day: date,
         output_measurement: str,
         output_entity_id: str,
+        interval_seconds: int = 300,
     ):
+        if (
+            isinstance(interval_seconds, bool)
+            or not isinstance(interval_seconds, int)
+            or interval_seconds <= 0
+        ):
+            raise ValueError("interval_seconds must be a positive integer")
         super().__init__(
             influx_handler=influx_handler,
             input_bucket=input_bucket,
@@ -33,6 +40,7 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
             output_entity_id=output_entity_id,
         )
         self.sources = sources
+        self.interval_seconds = interval_seconds
 
     def process(self) -> int:
         last_day = self.influx_handler.get_last_data_day(
@@ -78,19 +86,47 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
             raise ValueError(f"No input data found for corrected house consumption on {day}")
 
         source_roles = set(self.sources)
-        if day_start not in events and set(values) == source_roles:
-            self._write_value(day_start, values)
-
-        for event_time in sorted(events):
-            values.update(events[event_time])
-            if set(values) == source_roles:
-                self._write_value(event_time, values)
-
-        if set(values) != source_roles:
-            missing = sorted(source_roles - set(values))
+        missing_at_start = sorted(source_roles - set(values))
+        if missing_at_start:
             raise ValueError(
-                f"Missing source state for corrected house consumption on {day}: {missing}"
+                f"Missing source state at start of corrected house consumption on {day}: {missing_at_start}"
             )
+
+        ordered_events = sorted(events.items())
+        event_index = 0
+        bin_start = day_start
+        while bin_start < day_end:
+            bin_end = min(
+                bin_start + timedelta(seconds=self.interval_seconds),
+                day_end,
+            )
+            covered_seconds = (bin_end - bin_start).total_seconds()
+            energy_w_seconds = {role: 0.0 for role in source_roles}
+            cursor = bin_start
+
+            while event_index < len(ordered_events):
+                event_time, changes = ordered_events[event_index]
+                if event_time >= bin_end:
+                    break
+                if event_time > cursor:
+                    elapsed = (event_time - cursor).total_seconds()
+                    for role in source_roles:
+                        energy_w_seconds[role] += float(values[role]) * elapsed
+                    cursor = event_time
+                values.update(changes)
+                event_index += 1
+
+            if cursor < bin_end:
+                elapsed = (bin_end - cursor).total_seconds()
+                for role in source_roles:
+                    energy_w_seconds[role] += float(values[role]) * elapsed
+
+            interval_means = {
+                role: energy / covered_seconds
+                for role, energy in energy_w_seconds.items()
+            }
+            self._write_value(bin_start, interval_means)
+            bin_start = bin_end
 
     def _load_start_values(self, day_start: datetime) -> Dict[str, Any]:
         values: Dict[str, Any] = {}
