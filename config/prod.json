@@ -21,8 +21,8 @@
                 ]
             },
             "Waermepumpe_statistik": {
-                "version": "v2",
-                "source_version": "v2",
+                "version": "v3",
+                "source_version": "v1",
                 "compressor_post_run_minutes": 15,
                 "emit_daily_summary": false,
                 "output_measurement": "Waermepumpe_statistik",
