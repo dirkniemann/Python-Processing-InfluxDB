@@ -10,14 +10,87 @@ views:
           - type: heading
             heading: Aktueller Lauf
             icon: mdi:play-circle-outline
-          - type: tile
-            entity: sensor.python_processing_prod_processing_last_run_status
-            name: Ergebnis letzter Lauf
-            icon: mdi:check-decagram
-          - type: tile
-            entity: sensor.python_processing_prod_processing_run_state
-            name: Laufzustand
-            icon: mdi:run
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_last_run_status
+                state: Erfolgreich
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_last_run_status
+              name: Ergebnis letzter Lauf
+              icon: mdi:check-decagram
+              color: green
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_last_run_status
+                state: Erfolgreich mit Warnungen
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_last_run_status
+              name: Ergebnis letzter Lauf
+              icon: mdi:alert-decagram
+              color: orange
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_last_run_status
+                state: Fehler
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_last_run_status
+              name: Ergebnis letzter Lauf
+              icon: mdi:close-octagon
+              color: red
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_last_run_status
+                state:
+                  - unknown
+                  - unavailable
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_last_run_status
+              name: Noch kein Ergebnis
+              icon: mdi:help-circle-outline
+              color: disabled
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_run_state
+                state: Läuft
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_run_state
+              name: Laufzustand
+              icon: mdi:run
+              color: green
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_run_state
+                state: Leerlauf
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_run_state
+              name: Laufzustand
+              icon: mdi:pause-circle-outline
+              color: disabled
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.python_processing_prod_processing_run_state
+                state:
+                  - unknown
+                  - unavailable
+            card:
+              type: tile
+              entity: sensor.python_processing_prod_processing_run_state
+              name: Noch kein Laufstatus
+              icon: mdi:help-circle-outline
+              color: disabled
 
       - type: grid
         cards:
@@ -58,4 +131,9 @@ views:
             icon: mdi:alert-decagram-outline
           - type: markdown
             content: >-
-              {{ states('sensor.python_processing_prod_processing_last_run_diagnostic') }}
+              {% set diagnostic = states('sensor.python_processing_prod_processing_last_run_diagnostic') %}
+              {% if diagnostic in ['unknown', 'unavailable', ''] %}
+                Noch keine Diagnose für einen abgeschlossenen Lauf vorhanden.
+              {% else %}
+                {{ diagnostic }}
+              {% endif %}

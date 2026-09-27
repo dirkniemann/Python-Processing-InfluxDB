@@ -107,6 +107,13 @@ class MQTTConfig:
 class MQTTStatusPublisher:
     """Publishes compact retained run status; MQTT failures never escape publish calls."""
 
+    RESULT_LABELS = {
+        "SUCCESS": "Erfolgreich",
+        "SUCCESS_WITH_WARNINGS": "Erfolgreich mit Warnungen",
+        "ERROR": "Fehler",
+    }
+    RUN_STATE_LABELS = {"RUNNING": "Läuft", "IDLE": "Leerlauf"}
+
     ENTITY_DEFINITIONS = (
         ("sensor", "processing_last_run_status", "Letzter Lauf", None),
         ("sensor", "processing_run_state", "Laufzustand", None),
@@ -133,6 +140,10 @@ class MQTTStatusPublisher:
     @property
     def state_topic(self) -> str:
         return f"{self.config.topic_prefix}/{self.stage}/state"
+
+    @property
+    def availability_topic(self) -> str:
+        return f"{self.config.topic_prefix}/{self.stage}/availability"
 
     @property
     def status_topic(self) -> str:
@@ -166,7 +177,7 @@ class MQTTStatusPublisher:
                 # If the process dies unexpectedly, Home Assistant should show
                 # the last run as failed. A clean disconnect does not publish
                 # the Will, so the retained result remains unchanged.
-                self.client.will_set(self.status_topic, payload="ERROR", qos=self.config.qos, retain=True)
+                self.client.will_set(self.status_topic, payload=self.RESULT_LABELS["ERROR"], qos=self.config.qos, retain=True)
                 self.client.connect(self.config.host, self.config.port, self.config.keepalive)
                 loop_start = getattr(self.client, "loop_start", None)
                 if loop_start:
@@ -179,6 +190,11 @@ class MQTTStatusPublisher:
                 elif connected_event.is_set() and not connection_result["accepted"]:
                     raise ConnectionError("MQTT broker rejected the connection")
                 self.connected = True
+                # This availability describes the retained status feed, not
+                # whether the cron-launched process stays resident. Keep it
+                # online between scheduled runs so Home Assistant does not
+                # mark retained status entities unavailable while Python exits.
+                self.publish(self.availability_topic, "online", retain=True)
                 self.publish_discovery()
                 return True
             except Exception as exc:
@@ -232,10 +248,13 @@ class MQTTStatusPublisher:
         component, _, name, device_class = definition
         payload: Dict[str, Any] = {
             "name": name,
-            "unique_id": f"python_processing_{self.stage}_{object_id}",
-            "default_entity_id": f"{component}.python_processing_{self.stage}_{object_id}",
-            "state_topic": self.entity_topic(object_id),
-            "device": {
+                "unique_id": f"python_processing_{self.stage}_{object_id}",
+                "default_entity_id": f"{component}.python_processing_{self.stage}_{object_id}",
+                "state_topic": self.entity_topic(object_id),
+                "availability_topic": self.availability_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "device": {
                 "identifiers": [f"python-processing-{self.stage}"],
                 "name": "Python Processing",
                 "manufacturer": "Python Processing",
@@ -243,12 +262,18 @@ class MQTTStatusPublisher:
         }
         if device_class:
             payload["device_class"] = device_class
+        if object_id == "processing_last_run_status":
+            payload["device_class"] = "enum"
+            payload["options"] = list(self.RESULT_LABELS.values())
+        elif object_id == "processing_run_state":
+            payload["device_class"] = "enum"
+            payload["options"] = list(self.RUN_STATE_LABELS.values())
         if object_id == "processing_last_runtime":
             payload["unit_of_measurement"] = "s"
         return payload
 
     def publish_running(self, started_at: datetime) -> None:
-        self.publish(self.entity_topic("processing_run_state"), "RUNNING")
+        self.publish(self.entity_topic("processing_run_state"), self.RUN_STATE_LABELS["RUNNING"])
 
     def publish_result(
         self,
@@ -271,7 +296,14 @@ class MQTTStatusPublisher:
         examples = [item for item in examples if item][:5]
         components = sorted({sanitize_text(item, 80) for item in (warning_components or [])})
         if status == "ERROR":
-            details = sanitize_text(error) if error else "Unbekannter Fehler"
+            error_message = str(error) if error else ""
+            if not error_message:
+                error_message = (
+                    "Lauf manuell abgebrochen"
+                    if isinstance(error, KeyboardInterrupt)
+                    else "Keine Fehlermeldung verfügbar"
+                )
+            details = sanitize_text(error_message)
             diagnostic = f"{error_step}: " if error_step else ""
             if error:
                 diagnostic += f"{type(error).__name__}: "
@@ -287,10 +319,10 @@ class MQTTStatusPublisher:
         else:
             diagnostic = "Keine Warnungen oder Fehler im letzten Lauf."
 
-        self.publish(self.status_topic, status)
-        self.publish(self.entity_topic("processing_run_state"), "IDLE")
-        self.publish(self.entity_topic("processing_last_runtime"), duration)
+        # Publish detail first and the result last, so a result is not shown
+        # without its matching diagnosis if the broker connection drops midway.
         self.publish(self.entity_topic("processing_last_run_diagnostic"), diagnostic)
+        self.publish(self.entity_topic("processing_last_runtime"), duration)
         if status != "ERROR":
             self.publish(self.entity_topic("processing_last_success"), iso_utc(finished_at))
         if last_processed_date is not None:
@@ -298,6 +330,8 @@ class MQTTStatusPublisher:
                 self.entity_topic("processing_last_processed_date"),
                 last_processed_date.isoformat(),
             )
+        self.publish(self.entity_topic("processing_run_state"), self.RUN_STATE_LABELS["IDLE"])
+        self.publish(self.status_topic, self.RESULT_LABELS[status])
 
     def disconnect(self) -> None:
         if not self.client:
