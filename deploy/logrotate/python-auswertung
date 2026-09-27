@@ -1,0 +1,9 @@
+/var/log/Python_Auswertung/runs.log {
+    size 10M
+    rotate 10
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}

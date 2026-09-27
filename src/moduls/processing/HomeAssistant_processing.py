@@ -212,15 +212,48 @@ class HomeAssistantProcessor:
         if not version:
             raise ValueError("'Waermepumpe_statistik' config must include 'version'")
         
-        entities = config.get("entities", [])
-        if not isinstance(entities, list):
-            raise ValueError("'Waermepumpe_statistik.entities' must be a list")
-        
-        # Filter valid entities
-        valid_entities = [
-            entity for entity in entities 
-            if isinstance(entity, str) and entity.strip()
-        ]
+        sensors = config.get("sensors")
+        required_roles = {
+            "heat_pump_1_counter",
+            "heat_pump_2_counter",
+            "grid_power",
+            "compressor_1",
+            "compressor_2",
+        }
+        if not isinstance(sensors, dict) or set(sensors) != required_roles:
+            raise ValueError(
+                "'Waermepumpe_statistik.sensors' must define exactly: "
+                + ", ".join(sorted(required_roles))
+            )
+
+        for role, sensor in sensors.items():
+            if not isinstance(sensor, dict):
+                raise ValueError(f"'Waermepumpe_statistik.sensors.{role}' must be a dictionary")
+            for key in ("measurement", "entity_id", "field", "unit"):
+                if not isinstance(sensor.get(key), str) or not sensor[key].strip():
+                    raise ValueError(
+                        f"'Waermepumpe_statistik.sensors.{role}.{key}' must be a non-empty string"
+                    )
+
+        expected_units = {
+            "heat_pump_1_counter": "kWh",
+            "heat_pump_2_counter": "kWh",
+            "grid_power": "W",
+            "compressor_1": "state",
+            "compressor_2": "state",
+        }
+        for role, expected_unit in expected_units.items():
+            if sensors[role]["unit"] != expected_unit:
+                raise ValueError(
+                    f"'Waermepumpe_statistik.sensors.{role}.unit' must be '{expected_unit}'"
+                )
+
+        post_run_minutes = config.get("compressor_post_run_minutes", 0)
+        if not isinstance(post_run_minutes, (int, float)) or post_run_minutes < 0:
+            raise ValueError("'Waermepumpe_statistik.compressor_post_run_minutes' must be non-negative")
+        emit_daily_summary = config.get("emit_daily_summary", False)
+        if not isinstance(emit_daily_summary, bool):
+            raise ValueError("'Waermepumpe_statistik.emit_daily_summary' must be boolean")
 
         output_measurement = config.get("output_measurement")
         if not output_measurement or not isinstance(output_measurement, str):
@@ -230,38 +263,43 @@ class HomeAssistantProcessor:
         if not output_entity_id or not isinstance(output_entity_id, str):
             raise ValueError("'Waermepumpe_statistik' config must include a valid 'output_entity_id'")
 
-        if valid_entities:
-            processor = WaermepumpeStatistikProcessor(
-                influx_handler=self.influx_handler,
-                input_bucket=self.input_bucket,
-                output_bucket=self.output_bucket,
-                version=version,
-                entities=valid_entities,
-                first_data_day=self.first_data_day,
-                output_measurement=output_measurement,
-                output_entity_id=output_entity_id
-            )
-            self.processors.append(processor)
-            logger.debug(f"Initialized WaermepumpeStatistikProcessor with {len(valid_entities)} entities (version: {version})")
-        else:
-            logger.warning("No valid entities found for Waermepumpe_statistik processor")
+        processor = WaermepumpeStatistikProcessor(
+            influx_handler=self.influx_handler,
+            input_bucket=self.input_bucket,
+            output_bucket=self.output_bucket,
+            version=version,
+            entities=[],
+            sensor_roles=sensors,
+                source_version=config.get("source_version", version),
+                compressor_post_run_minutes=float(post_run_minutes),
+                emit_daily_summary=emit_daily_summary,
+            first_data_day=self.first_data_day,
+            output_measurement=output_measurement,
+            output_entity_id=output_entity_id
+        )
+        self.processors.append(processor)
+        logger.debug(f"Initialized WaermepumpeStatistikProcessor with roles {sorted(sensors)} (version: {version})")
 
-    def process_data(self) -> None:
+    def process_data(self) -> int:
         """Run all configured processors in order.
 
         Args:
             None
         Returns:
-            None. Side-effects: each processor performs its own writes.
+            Number of calendar days processed by the configured processors.
         """
         logger.info("Starting data processing...")
-        
+        processed_days = 0
+
         for processor in self.processors:
             try:
                 logger.info(f"Running processor: {processor.__class__.__name__}")
-                processor.process()
+                processor_days = processor.process()
+                if isinstance(processor_days, int):
+                    processed_days = max(processed_days, processor_days)
             except Exception as e:
                 logger.error(f"Error in processor {processor.__class__.__name__}: {e}", exc_info=True)
                 raise RuntimeError(f"Processing failed in {processor.__class__.__name__}") from e
         
         logger.info("Data processing completed.")
+        return processed_days

@@ -1,4 +1,5 @@
 import importlib
+import copy
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -47,6 +48,13 @@ def test_homeassistant_processor_creates_processors(monkeypatch, prod_config, fa
     assert fix_stub.kwargs["output_measurement"] == prod_config["processing"]["entities_to_process"]["fix_waermepumpe_stromverbrauch"]["output_measurement"]
     assert daily_stub.kwargs["output_entity_id"] == prod_config["processing"]["entities_to_process"]["daily_aggregate"]["output_entity_id"]
     assert stat_stub.kwargs["output_entity_id"] == prod_config["processing"]["entities_to_process"]["Waermepumpe_statistik"]["output_entity_id"]
+    assert set(stat_stub.kwargs["sensor_roles"]) == {
+        "heat_pump_1_counter",
+        "heat_pump_2_counter",
+        "grid_power",
+        "compressor_1",
+        "compressor_2",
+    }
 
 
 def test_homeassistant_processor_validates_config(monkeypatch, fake_influx_module):
@@ -84,6 +92,41 @@ def test_daily_aggregate_requires_output_entity(monkeypatch, fake_influx_module)
         processing_module.HomeAssistantProcessor(handler, config, first_day)
 
     assert "output_entity_id" in str(excinfo.value)
+
+
+def test_waermepumpe_statistik_requires_explicit_sensor_roles(fake_influx_module):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
+    importlib.reload(processing_module)
+
+    config = {
+        "input_bucket": "input",
+        "output_bucket": "output",
+        "entities_to_process": {
+            "Waermepumpe_statistik": {
+                "version": "v2",
+                "output_measurement": "stats",
+                "output_entity_id": "Gesamt",
+                "sensors": {},
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="sensors"):
+        processing_module.HomeAssistantProcessor(
+            object(), config, datetime(2024, 1, 1).date()
+        )
+
+
+def test_waermepumpe_statistik_rejects_wrong_grid_unit(fake_influx_module, prod_config):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
+    importlib.reload(processing_module)
+    config = copy.deepcopy(prod_config["processing"])
+    config["entities_to_process"]["Waermepumpe_statistik"]["sensors"]["grid_power"]["unit"] = "kW"
+
+    with pytest.raises(ValueError, match="grid_power.unit"):
+        processing_module.HomeAssistantProcessor(
+            object(), config, datetime(2024, 1, 1).date()
+        )
 
 
 def test_get_days_to_process_uses_dates(fake_influx_module):

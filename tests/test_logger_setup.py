@@ -1,5 +1,6 @@
 import logging
 import importlib
+from datetime import datetime
 from pathlib import Path
 
 
@@ -27,3 +28,27 @@ def test_logger_cleanup_removes_old_files(tmp_path, monkeypatch):
     logger = module.get_logger(stage="dev", name="cleanup")
     assert not old_file.exists()
     assert logging.getLogger().handlers
+
+
+def test_write_run_summary_appends_one_sanitized_line(tmp_path):
+    module = importlib.import_module("moduls.logger_setup")
+    summary_file = tmp_path / "runs.log"
+
+    module.write_run_summary(
+        started_at=datetime(2026, 9, 27, 4, 0, 0),
+        finished_at=datetime(2026, 9, 27, 4, 0, 3),
+        stage="prod",
+        status="ERROR",
+        days=0,
+        step="data processing",
+        error_type="RuntimeError",
+        error_message="token\nwas not included",
+        summary_file=summary_file,
+    )
+
+    lines = summary_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert "| ERROR |" in lines[0]
+    assert "Fehler in data_processing (RuntimeError): token_was_not_included" in lines[0]
+    assert "Dauer: 3 s" in lines[0]
+    assert "\n" not in lines[0]

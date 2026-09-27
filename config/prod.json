@@ -21,14 +21,44 @@
                 ]
             },
             "Waermepumpe_statistik": {
-                "version": "v1",
+                "version": "v2",
+                "source_version": "v2",
+                "compressor_post_run_minutes": 15,
+                "emit_daily_summary": false,
                 "output_measurement": "Waermepumpe_statistik",
                 "output_entity_id": "Gesamt",
-                "entities": [
-                    "e3_vitocal_heizung_stromverbrauch_heute",
-                    "e3_vitocal_heizung_stromverbrauch_heute_2",
-                    "fems_gridactivepower"
-                ]
+                "sensors": {
+                    "heat_pump_1_counter": {
+                        "measurement": "kWh",
+                        "entity_id": "e3_vitocal_heizung_stromverbrauch_heute",
+                        "field": "value",
+                        "unit": "kWh"
+                    },
+                    "heat_pump_2_counter": {
+                        "measurement": "kWh",
+                        "entity_id": "e3_vitocal_heizung_stromverbrauch_heute_2",
+                        "field": "value",
+                        "unit": "kWh"
+                    },
+                    "grid_power": {
+                        "measurement": "W",
+                        "entity_id": "fems_gridactivepower",
+                        "field": "value",
+                        "unit": "W"
+                    },
+                    "compressor_1": {
+                        "measurement": "binary_sensor.e3_vitocal_kompressor",
+                        "entity_id": "e3_vitocal_kompressor",
+                        "field": "value",
+                        "unit": "state"
+                    },
+                    "compressor_2": {
+                        "measurement": "binary_sensor.e3_vitocal_kompressor_2",
+                        "entity_id": "e3_vitocal_kompressor_2",
+                        "field": "value",
+                        "unit": "state"
+                    }
+                }
             }
         }
     },

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
 
-from moduls.logger_setup import get_logger
+from moduls.logger_setup import get_logger, write_run_summary
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.processing.HomeAssistant_processing import HomeAssistantProcessor
 
@@ -94,106 +94,105 @@ def main() -> int:
     Returns:
         Exit code
     """
+    start_time = datetime.now()
+    finished_time = start_time
+    stage = "unknown"
+    logger = None
+    influx_handler = None
+    days_processed = 0
+    step = "argument parsing"
+    error = None
+
     try:
-        start_time = datetime.now()
-        # Parse arguments
         args = parse_arguments()
-        
-        # Convert log level string to logging constant
-        log_level = None
-        if args.log_level:
-            log_level = getattr(logging, args.log_level.upper(), None)
-        
-        # Setup logger
+        stage = args.stage
+
+        step = "logger setup"
+        log_level = getattr(logging, args.log_level.upper(), None) if args.log_level else None
         logger = get_logger(
             stage=args.stage,
             log_level=log_level,
             log_file=args.log_file,
-            name=__name__
+            name=__name__,
         )
-        
         logger.info("Application started")
         logger.info(f"Stage: {args.stage}")
-        
-        # Setup environment
+
+        step = "environment setup"
         setup_environment(args.stage)
         logger.debug("Environment variables loaded")
-        
-        # Load configuration
+
+        step = "configuration loading"
         config = load_configuration(args.stage)
         logger.debug("Configuration loaded successfully")
-        logger.debug(f"Config: {config}")
-        
-        # Initialize InfluxDB handler
-        logger.debug("Initializing InfluxDB handler...")
-        influx_handler = None
-        try:
-            influx_handler = InfluxDBHandler()
-            if not influx_handler.connect():
-                logger.error("Could not connect to InfluxDB")
-                return 1
 
-            logger.info("InfluxDB handler connected successfully")
+        step = "InfluxDB connection"
+        influx_handler = InfluxDBHandler()
+        if not influx_handler.connect():
+            raise RuntimeError("Could not connect to InfluxDB")
+        logger.info("InfluxDB handler connected successfully")
 
-            # Get first data day (hard-stop if unavailable)
+        step = "first data day lookup"
+        first_data_day = influx_handler.get_first_data_day(
+            bucket=config["processing"]["input_bucket"],
+        )
+        if first_data_day is None:
+            raise RuntimeError("No data available in input bucket; aborting run")
+
+        step = "processor initialization"
+        ha_processor = HomeAssistantProcessor(
+            influx_handler=influx_handler,
+            processing_config=config["processing"],
+            first_data_day=first_data_day,
+        )
+
+        step = "data processing"
+        days_processed = ha_processor.process_data()
+        step = "completed"
+    except Exception as exc:
+        error = exc
+        if logger:
+            logger.error(f"Run failed during {step}: {exc}", exc_info=True)
+        else:
+            print(f"Run failed during {step}: {exc}", file=sys.stderr)
+    finally:
+        if influx_handler:
             try:
-                first_data_day = influx_handler.get_first_data_day(
-                    bucket=config["processing"]["input_bucket"],
-                )
-            except Exception as e:
-                logger.error(f"Failed to retrieve first data day: {e}", exc_info=True)
-                return 1
-
-            if first_data_day is None:
-                logger.error("No data available in input bucket; aborting run")
-                return 1
-
-            # Initialize HomeAssistant processor
-            try:
-                ha_processor = HomeAssistantProcessor(
-                    influx_handler=influx_handler,
-                    processing_config=config["processing"],
-                    first_data_day=first_data_day
-                )
-                logger.debug("HomeAssistant processor initialized successfully")
-
-                # Process data
-                ha_processor.process_data()
-
-            except (KeyError, ValueError) as e:
-                logger.error(f"Failed to initialize processor: {e}", exc_info=True)
-                return 1
-
-        except (ImportError, ValueError) as e:
-            logger.error(f"InfluxDB handler initialization failed: {e}")
-            return 1
-        finally:
-            if influx_handler:
+                step = "InfluxDB disconnect"
                 influx_handler.disconnect()
+            except Exception as exc:
+                if error is None:
+                    error = exc
+                if logger:
+                    logger.error(f"Run failed during disconnect: {exc}", exc_info=True)
 
-        duration = datetime.now() - start_time
-        logger.info(f"Application completed successfully. Duration: {duration}")
-        
-        return 0
-        
-    except ValueError as e:
-        if 'logger' in locals():
-            logger.error(f"Value Error: {e}", exc_info=True)
-        else:
-            print(f"Error: {e}", file=sys.stderr)
+        finished_time = datetime.now()
+        status = "ERROR" if error else "SUCCESS"
+        try:
+            write_run_summary(
+                started_at=start_time,
+                finished_at=finished_time,
+                stage=stage,
+                status=status,
+                days=days_processed,
+                step=None if status == "SUCCESS" else step,
+                error_type=None if error is None else type(error).__name__,
+                error_message=None if error is None else str(error),
+            )
+        except Exception as summary_error:
+            message = f"Unable to write run summary: {summary_error}"
+            if logger:
+                logger.error(message, exc_info=True)
+            else:
+                print(message, file=sys.stderr)
+            error = error or summary_error
+
+    if error:
         return 1
-    except FileNotFoundError as e:
-        if 'logger' in locals():
-            logger.error(f"File not found: {e}", exc_info=True)
-        else:
-            print(f"Error: {e}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        if 'logger' in locals():
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-        else:
-            print(f"Unexpected error: {e}", file=sys.stderr)
-        return 1
+
+    if logger:
+        logger.info(f"Application completed successfully. Duration: {finished_time - start_time}")
+    return 0
 
 
 if __name__ == "__main__":
