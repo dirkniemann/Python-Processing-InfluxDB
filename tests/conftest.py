@@ -15,6 +15,10 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT_DIR / "src"
 CONFIG_PATH = ROOT_DIR / "config" / "prod.json"
 
+src_str = str(SRC_DIR)
+if src_str not in sys.path:
+    sys.path.insert(0, src_str)
+
 
 class FakeWriteAPI:
     """Collect writes for assertions."""

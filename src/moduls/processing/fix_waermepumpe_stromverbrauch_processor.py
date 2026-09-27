@@ -30,6 +30,7 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
             measurement=self.output_measurement,
         )
 
+        existing_last_data_day = last_data_day
         if not last_data_day:
             logger.debug(
                 f"No existing data for {self.entities[0]} in output bucket, starting from first data day"
@@ -39,6 +40,7 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
         days_to_process = get_days_to_process(last_data_day)
 
         if not days_to_process:
+            self.last_complete_date = existing_last_data_day
             logger.info(f"No days to process for {self.entities[0]}")
             return 0
 
@@ -47,6 +49,7 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
         for day in days_to_process:
             self._process_day(day)
 
+        self.last_complete_date = days_to_process[-1]
         return len(days_to_process)
 
     def _process_day(self, day: datetime.date) -> None:

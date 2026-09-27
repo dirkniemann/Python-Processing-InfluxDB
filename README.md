@@ -56,7 +56,11 @@ Create a `.env` (copy `.env_example` if present) and fill in required variables,
 INFLUX_URL=http://influxdb:8086
 INFLUX_TOKEN=your-token
 INFLUX_ORG=your-org
+MQTT_USERNAME=your-mqtt-username
+MQTT_PASSWORD=your-mqtt-password
 ```
+
+`MQTT_USERNAME` und `MQTT_PASSWORD` werden nur benötigt, wenn der konfigurierte MQTT-Broker eine Authentifizierung verlangt. Die Werte gehören ausschließlich in die lokale `.env` und niemals ins Repository.
 
 Stage config lives in `config/<stage>.json` (e.g., `dev.json`, `prod.json`) and defines:
 - `processing.input_bucket` / `processing.output_bucket`
@@ -183,7 +187,6 @@ nano .env
 
 ## Roadmap / TODO
 - Batterieszenario-Handling implementieren
-- MQTT-Status für Home Assistant implementieren
 
 ## Aktueller Stand und To Do
 
@@ -660,14 +663,85 @@ Die Varianten `without_old_pv` und `with_old_pv` sind fachlich festgelegt. `pv_e
 
 `elektrischer_verbrauch` darf ausschließlich als Quelle der festgelegten korrigierten Reihe verwendet werden, nicht unverändert als Simulationslast. Change-only-Werte bis zur nächsten Änderung fortschreiben; nicht beweisbare Recorder-Ausfälle als `quality_uncertain` markieren und fehlende Erstzustände als unvollständig behandeln. `get_last_datapoint()` nicht semantisch ändern; für chronologisch letzte Change-only-Zustände wird die separate Abfrage verwendet. PV-Reihen vor Interpretation auf Überlappung prüfen; DC-Leistungsgrenzen und V1-Verlustannahme explizit kennzeichnen. SOC nicht an Tagesgrenzen zurücksetzen. Python schreibt keine Kosten/Amortisation. Für jeden vollständigen lokalen Tag und jede Kombination aus `scenario`/`pv_mode` wird Tagesenergie einschließlich `pv_export_kwh` nach `Szenario` (dev: `testing`) geschrieben.
 
-### MQTT-Status für Home Assistant (offen)
+### MQTT-Status für Home Assistant (implementiert)
 
-Nach der Stabilisierung von Logging und Deployment soll das Skript seinen Laufstatus zusätzlich per MQTT an Home Assistant melden. Die MQTT-Verbindung dient als Betriebsinformation und darf den eigentlichen InfluxDB-Verarbeitungslauf nicht unnötig blockieren oder bei einem MQTT-Ausfall als alleinige Ursache den fachlich erfolgreichen Lauf nachträglich als fehlgeschlagen darstellen.
+Die MQTT-Integration ist ein zusätzlicher Betriebs- und Health-Kanal zwischen Python-Processing und Home Assistant. Die Energiedaten und Verarbeitungsergebnisse bleiben in InfluxDB und Grafana. MQTT überträgt nur kompakte Informationen über den Betrieb des Processing-Jobs; es ersetzt weder die InfluxDB-Ausgaben noch die normalen Python-Logs.
 
-1. **Laufstatus veröffentlichen.** Vor dem Start, während der Verarbeitung und nach dem Abschluss werden kompakte Statusinformationen veröffentlicht. Der Abschluss enthält mindestens `SUCCESS` oder `ERROR`, Startzeit, Endzeit beziehungsweise Dauer und die Anzahl verarbeiteter Tage. Ein Lauf ohne neue Tage wird als erfolgreicher Lauf mit `0` Tagen gemeldet.
-2. **Fehler verständlich melden.** Bei Problemen werden der betroffene Verarbeitungsschritt, die Fehlerklasse und eine kurze, bereinigte Fehlermeldung übertragen. Zugangsdaten, Tokens, vollständige Konfigurationen, Query-Inhalte und Rohmessdaten dürfen nicht in MQTT-Nachrichten erscheinen.
-3. **Home-Assistant-Entitäten bereitstellen.** Die Topics sollen sich für MQTT-Sensoren und eine Laufstatus-Anzeige in Home Assistant eignen, zum Beispiel für Status, letzte erfolgreiche Ausführung, letzte Ausführung, Dauer, verarbeitete Tage und letzte Fehlermeldung. Die MQTT Discovery kann genutzt werden, damit die Entitäten ohne umfangreiche manuelle YAML-Konfiguration angelegt werden.
-4. **Verfügbarkeit und retained Zustände.** Der aktuelle Abschlussstatus sowie die letzten bekannten Kennzahlen sollen mit Bedacht als retained Nachrichten veröffentlicht werden. Zusätzlich soll ein Last-Will-/Availability-Topic anzeigen, ob der Prozess beziehungsweise die MQTT-Verbindung verfügbar ist. Veraltete Fehlermeldungen dürfen nicht dauerhaft als aktueller Fehler erscheinen, wenn ein späterer Lauf erfolgreich war.
-5. **Logübermittlung begrenzen.** Für Diagnosezwecke darf ein gekürzter, bereinigter Logauszug über ein eigenes Topic übertragen werden. Das vollständige technische Log und unbegrenzte Tracebacks gehören nicht in eine einzelne MQTT-Nachricht. Nachrichtengröße, Aufbewahrung und Übertragungsfrequenz müssen begrenzt werden; Secrets und sensible InfluxDB-Inhalte sind vor der Übertragung zu entfernen.
-6. **Verbindung und Sicherheit konfigurieren.** Broker-Adresse, Port, TLS, Benutzername, Passwort, Client-ID, Topic-Präfix und Discovery-Präfix werden ausschließlich über sichere Umgebungsvariablen oder eine geschützte lokale Konfiguration bereitgestellt. Passwörter und Tokens dürfen weder im Repository noch in Logs oder MQTT-Payloads stehen. Die Verbindung muss Timeouts, Wiederverbindung und eine saubere Trennung zwischen Entwicklungs- und Produktionspräfix unterstützen.
-7. **Fehlerisolierung und Tests.** MQTT-Fehler werden separat protokolliert und nachvollziehbar gemeldet. Die fachliche Erfolgs-/Fehlerzeile in `runs.log` bleibt maßgeblich für den Prozessstatus. Zu testen sind erfolgreiche Läufe, Läufe ohne neue Tage, Verarbeitungsfehler, MQTT-Broker-Ausfall, Wiederverbindung, retained Status, Discovery-Payloads, Last-Will/Availability, Payload-Bereinigung und abgeschnittene Logauszüge.
+Die Implementierung verwendet `paho-mqtt` 2.x mit MQTT 3.1.1. MQTT ist in `prod` standardmäßig aktiv und in `dev`/`test` deaktiviert. Broker, Port, TLS, Client-ID, Topic-Präfixe und Timeouts stehen in `config/<stage>.json`; Benutzername und Passwort werden ausschließlich über die dort benannten Environment-Variablen geladen. Die lokale Statusdatei `logs/mqtt_status_<stage>.json` enthält nur den persistenten Betriebsstatus und niemals Zugangsdaten.
+
+#### Bestehender Betrieb und Grenzen
+
+- Der Produktivbetrieb startet `src/main.py` derzeit einmal täglich um 04:00 Uhr über Cron. `flock` verhindert überlappende Läufe; das Python-Programm beendet sich nach einem Lauf. Es handelt sich somit aktuell nicht um einen dauerhaft laufenden Daemon.
+- Während der langen Pause zwischen zwei Cron-Läufen ist `offline` der erwartete Prozesszustand. Home Assistant darf diesen Zustand nicht allein als Ausfall interpretieren. Ein ausgebliebener Lauf wird über den Zeitabstand seit dem letzten erfolgreichen Lauf beziehungsweise seit dem erwarteten Laufzeitpunkt erkannt.
+- `main()` bietet einen zentralen Lebenszyklus für Start, Verarbeitung, Exceptions, InfluxDB-Disconnect und Laufabschluss. Unerwartete Exceptions führen bereits zu einem Fehlercode und einer Zusammenfassung in `runs.log`.
+- `HomeAssistantProcessor.process_data()` liefert aktuell eine Tagesanzahl, aber keinen verlässlichen letzten vollständig verarbeiteten Tag. Die Tagesanzahl ist das Maximum der Rückgabewerte einzelner Processor und keine globale Fortschrittsbestätigung.
+- Processor erzeugen bereits `WARNING`- und `ERROR`-Logmeldungen. Es gibt derzeit aber keine zentrale Erfassung, die Warnungen einem Lauf zuordnet, zusammenfasst und in dessen Endstatus überführt.
+- Der Launcher kann bereits vor dem Start von Python scheitern, zum Beispiel bei `git pull`, Logrotate-Prüfung oder Start des virtuellen Environments. Ein MQTT-LWT des Python-Prozesses deckt Fehler vor dem Python-Start nicht ab. Der Zeitüberschreitungsalarm auf den erwarteten erfolgreichen Lauf bleibt deshalb erforderlich.
+
+#### Statusmodell und Persistenz
+
+Die Laufaktivität und das Ergebnis des letzten abgeschlossenen Laufs werden getrennt veröffentlicht. Dadurch überschreibt ein neuer Start einen vorherigen Fehler nicht einfach mit `RUNNING`.
+
+| Status / Wert | Bedeutung und Aktualisierung |
+| --- | --- |
+| `run_state = RUNNING` | Python hat den Lauf begonnen und arbeitet aktuell. Wird beim Start eines Laufs gesetzt. |
+| `run_state = IDLE` | Der Lauf wurde regulär beendet. Der Python-Prozess darf anschließend wie bisher enden. |
+| `last_run_status = SUCCESS` | Verarbeitung vollständig beendet, ohne `WARNING`-Meldungen und ohne Fehler. |
+| `last_run_status = SUCCESS_WITH_WARNINGS` | Lauf fachlich beendet, mindestens eine Warnung ist während dieses Laufs entstanden, aber kein fataler Fehler hat den Lauf abgebrochen. |
+| `last_run_status = FAILED` | Lauf durch Exception, Verbindungsfehler, Abbruch oder einen anderen fatalen Fehler fehlgeschlagen. |
+| `last_success` | UTC-Zeitpunkt des letzten vollständig abgeschlossenen Laufs ohne fatalen Fehler. `SUCCESS_WITH_WARNINGS` zählt als erfolgreicher Abschluss und aktualisiert diesen Wert; `FAILED` lässt ihn unverändert. |
+| `last_failure` / ungelöster Fehler | Letzter fataler Fehler bleibt bei Prozessneustart und während des nächsten Laufs erhalten. Er wird erst durch einen später vollständig abgeschlossenen Lauf (`SUCCESS` oder `SUCCESS_WITH_WARNINGS`) aufgelöst. |
+
+`last_run_status` beschreibt immer das neueste abgeschlossene Ergebnis. Ein zusätzlicher persistenter Fehlerindikator oder ein entsprechender Discovery-Sensor hält einen vorherigen fatalen Fehler sichtbar, bis ein späterer Lauf vollständig abgeschlossen ist. Damit bleibt die Fehler-Latch-Anforderung erfüllt, auch wenn der Prozess neu startet oder ein neuer Lauf beginnt. Ein Lauf ohne neue Tage ist ein regulärer Erfolg; er wird mit null verarbeiteten Tagen gemeldet und aktualisiert `last_success`.
+
+Alle Zeitstempel werden als eindeutige ISO-8601-Zeitstempel in UTC übertragen. Processing-Tage sind lokale Kalendertage in `Europe/Berlin` und werden als `YYYY-MM-DD` gemeldet.
+
+#### Warnungen und Logging
+
+- Alle `WARNING`-Meldungen, die während eines Laufs im Python-Logging entstehen, sollen für genau diesen Lauf gezählt und erfasst werden. Dazu ist das Logging um einen laufbezogenen Warnungssammler beziehungsweise Handler zu ergänzen; Warnungen aus den bestehenden Modulen dürfen dabei nicht verloren gehen.
+- Wenn der Lauf keine fatalen Fehler hat und mindestens eine Warnung entstanden ist, lautet sein Ergebnis `SUCCESS_WITH_WARNINGS`. Eine Warnung allein macht den Lauf nicht zu `FAILED`.
+- Bei mindestens einem fatalen Fehler lautet das Ergebnis `FAILED`; es hat Vorrang vor dem Warnungsstatus. Warnungen aus einem fehlgeschlagenen Lauf können zusätzlich als Diagnoseinformation gezählt werden.
+- Die bestehende kompakte `runs.log`-Zusammenfassung soll die Statuswerte `SUCCESS`, `SUCCESS_WITH_WARNINGS` und `ERROR`/`FAILED`, Laufzeit, Anzahl verarbeiteter Tage sowie bei Warnungen mindestens die Warnungsanzahl enthalten. Für Warnungen und Fehler ist eine kurze, bereinigte Zusammenfassung sinnvoll. Ausführliche Meldungen und Stacktraces bleiben in den normalen, rotierten Python-Logs.
+- MQTT-Payloads dürfen keine vollständigen Stacktraces enthalten. Warnungs- und Fehlertexte werden gekürzt, einzeilig und bereinigt übertragen. Anzahl und betroffene Komponenten können als Attribute mitgesendet werden; eine begrenzte Auswahl repräsentativer Warnungstexte kann die Diagnose erleichtern. Secrets, Tokens, Query-Inhalte und Rohmessdaten dürfen nicht übertragen werden.
+- Unkritische `WARNING`-Meldungen werden ebenfalls sichtbar gemacht und nicht stillschweigend verworfen. Die genaue Warnungsanzahl bleibt erhalten, auch wenn die Liste kurzer Beispielmeldungen aus Größen- oder Datenschutzgründen begrenzt wird.
+
+#### Vorgeschlagene MQTT-Werte und Home-Assistant-Entities
+
+Es sollen wenige, aber für Betrieb und Automationen nützliche Entities angelegt werden. Zusätzliche Werte, die nur für Diagnose taugen, gehören als Attribute an diese Entities und nicht automatisch als eigene Sensoren.
+
+| Entity / Wert | Zweck | Einheit / Klasse |
+| --- | --- | --- |
+| `sensor.processing_last_run_status` | Ergebnis des letzten abgeschlossenen Laufs: `SUCCESS`, `SUCCESS_WITH_WARNINGS` oder `FAILED`. Attribute: Start/Ende, Laufzeit, verarbeitete Tage, Warnungsanzahl und betroffene Komponenten. | Keine |
+| `binary_sensor.processing_running` | Zeigt, ob aktuell ein Python-Lauf aktiv ist. | Keine |
+| `binary_sensor.processing_failure_latched` | Bleibt nach einem fatalen Fehler `on`, bis ein Lauf ohne fatalen Fehler vollständig abgeschlossen wurde (mit oder ohne Warnungen). Fehlerzeitpunkt und kurze Fehlerdetails als Attribute. | Keine |
+| `sensor.processing_last_success` | Zeitpunkt des letzten vollständig abgeschlossenen Laufs ohne fatalen Fehler; Warnungen bleiben über `last_run_status` sichtbar. | Timestamp |
+| `sensor.processing_last_runtime` | Dauer des letzten abgeschlossenen Laufs. | Sekunden, Dauer |
+| `sensor.processing_last_processed_date` | Letzter lokaler Processing-Tag, der für alle als erforderlich definierten Stufen vollständig abgeschlossen wurde. | Datum |
+| Availability der Discovery-Entities | Erreichbarkeit der aktiven MQTT-Verbindung; wird für unerwartete Unterbrechungen genutzt. | MQTT Availability |
+
+`processing_last_run_status` kann als gemeinsamer Status-Sensor die Laufdetails und Warnungsinformationen über Attribute tragen. Der separate Fehler-Latch ist nötig, damit ein Prozessneustart oder ein noch laufender Job einen vorherigen fatalen Fehler nicht versehentlich löscht. Auf einen zusätzlichen `processing_health`-Sensor kann zunächst verzichtet werden: Home-Assistant-Automationen können Status, Fehler-Latch, `processing_running` und das Alter von `last_success` kombinieren.
+
+`last_processed_date` darf nicht aus der vorhandenen Tagesanzahl abgeleitet werden. Vor seiner Veröffentlichung muss die Verarbeitung den letzten gemeinsam und vollständig abgeschlossenen lokalen Tag zuverlässig ermitteln. Bei mehreren konfigurierten Stufen und Szenario-/PV-Modi gilt ein Tag erst dann als verarbeitet, wenn alle dafür als erforderlich definierten Ausgaben vollständig sind. Unvollständige Tage oder Qualitätsmarker dürfen den gemeldeten Stand nicht stillschweigend vorziehen.
+
+#### MQTT Topics, Retain, LWT und Discovery
+
+- Die Sensoren werden vollständig über Home-Assistant-MQTT-Discovery eingerichtet. Python veröffentlicht retained Discovery-Konfigurationen für alle oben vorgesehenen Entities; manuelle MQTT-Sensor-YAML-Einträge in Home Assistant sollen nicht nötig sein.
+- Discovery Topics folgen dem konfigurierbaren Schema `homeassistant/<component>/<node>/<object_id>/config`. Jedes Discovery-Objekt erhält eine stabile, stage-spezifische `unique_id`, stabile State- und Attribut-Topics sowie Device-Informationen. Als Device bietet sich beispielsweise „Python Processing prod“ mit Hersteller „Python Processing“ und einer stabilen Identifikationsliste an.
+- Ein stage-spezifisches Topic-Präfix trennt mindestens `dev`, `test` und `prod`. Die Discovery-Konfigurationen und letzte bekannte Ergebniswerte werden retained veröffentlicht, damit sie nach einem Neustart von Home Assistant oder des Brokers wiederhergestellt werden.
+- Der MQTT-Client registriert einen Last Will auf dem Availability-Topic mit retained Payload `offline`; nach erfolgreichem Verbindungsaufbau veröffentlicht er retained `online`. Bei normalem Prozessende veröffentlicht er explizit `offline`, bevor er die Verbindung sauber trennt, da ein LWT einen regulären Disconnect nicht ersetzt.
+- Availability bedeutet bei der aktuellen Cron-Ausführung nur, dass der MQTT-Client während eines Python-Laufs erreichbar ist. Das erwartete `offline` zwischen den täglichen Läufen ist kein Fehler. Eine Automation meldet einen ausgebliebenen Lauf anhand eines konfigurierbaren Alters von `last_success` beziehungsweise anhand des erwarteten Cronfensters.
+- Während eines langen Laufs kann zusätzlich ein Heartbeat-/Last-Seen-Timestamp in regelmäßigen Abständen publiziert werden. Home Assistant kann damit einen hängenden Lauf erkennen, wenn `processing_running` auf `on` bleibt, aber der Heartbeat innerhalb eines festgelegten Zeitfensters ausbleibt. Heartbeat allein ersetzt weder Laufstatus noch `last_success`.
+- Retained Discovery-Konfigurationen müssen bei einer späteren Entfernung oder Umbenennung der Integration gezielt gelöscht werden können, damit keine verwaisten Home-Assistant-Entities zurückbleiben.
+- Wo Home Assistant die Entity-Klassen unterstützt, werden passende Werte verwendet: Laufzeit mit Sekunden und Dauerklasse, Zeitstempel mit Timestamp-Klasse sowie Availability nach dem MQTT-Verfügbarkeitsmodell. Das Datum bleibt ein ISO-Datumswert ohne erfundene Einheit.
+
+#### Fehlerbehandlung, Konfiguration und Betriebssicherheit
+
+- MQTT-Broker, Port, TLS, Benutzername, Passwort, Client-ID, Topic-Präfix und Discovery-Präfix werden über Umgebungsvariablen oder eine geschützte lokale Konfiguration gesetzt. Zugangsdaten gehören nicht ins Repository, in MQTT-Payloads oder Logs.
+- MQTT-Timeouts und begrenzte Wiederholungsversuche verhindern, dass ein nicht erreichbarer Broker die Energiedatenverarbeitung dauerhaft blockiert. Ein MQTT-Ausfall wird separat geloggt und macht einen fachlich erfolgreichen InfluxDB-Lauf nicht nachträglich zu `FAILED`. Das Ausbleiben einer frischen Erfolgsmeldung muss Home Assistant dennoch über den Zeitwächter erkennen können.
+- Verarbeitungsstatus wird nach der Processing-Auswertung und dem InfluxDB-Disconnect finalisiert, damit ein Fehler beim Disconnect nicht irrtümlich als Erfolg veröffentlicht wird. Wenn MQTT erst nach dem Python-Start verfügbar ist, bleiben Fehler aus Launcher-Schritten vor Python nur über Launcher-Log und den ausgebliebenen Erfolg erkennbar.
+- Ein MQTT-Topic für vollständige Logs oder Stacktraces ist nicht vorgesehen. MQTT erhält nur Laufzustände, Zeitstempel, Laufzeit, Fortschrittswerte und kurze, bereinigte Warnungs-/Fehlerzusammenfassungen. Die Diagnose im Detail erfolgt über die vorhandenen Logs und `runs.log`.
+- Ein optionaler späterer Wechsel von Cron zu einem dauerhaft laufenden systemd-Dienst wäre eine separate Betriebsänderung. Erst dann würde `online` einen residenten Prozess über die gesamte Zeit bedeuten; für die aktuelle Implementierung ist kein neuer Daemon oder separates Monitoring-System vorgesehen.
+
+#### Umsetzungsstand
+
+Die laufbezogene Warning-Erfassung, der MQTT-Statuspublisher mit Discovery, Availability, LWT, Retain und Heartbeat, die Integration in `src/main.py`, die persistente Fehler-Latch-Regel sowie die fachliche Ermittlung des gemeinsam vollständig verarbeiteten lokalen Tages sind implementiert. Automatisierte Tests decken Erfolgsfälle, Warnungen, Fehler, MQTT-Ausfall, Retain, Discovery, Latch-Persistenz und Payload-Sanitizing ab.

@@ -13,6 +13,25 @@ def _summary_value(value: str) -> str:
     return "_".join(str(value).replace("\r", " ").replace("\n", " ").split())
 
 
+class RunWarningCollector(logging.Handler):
+    """Collect bounded warning diagnostics for one application run."""
+
+    def __init__(self, max_examples: int = 5, max_message_length: int = 240):
+        super().__init__(level=logging.WARNING)
+        self.max_examples = max_examples
+        self.max_message_length = max_message_length
+        self.warning_count = 0
+        self.warning_components = set()
+        self.warning_examples = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.warning_count += 1
+        self.warning_components.add(_summary_value(record.name)[:80])
+        message = _summary_value(record.getMessage())[: self.max_message_length]
+        if message and message not in self.warning_examples and len(self.warning_examples) < self.max_examples:
+            self.warning_examples.append(message)
+
+
 def write_run_summary(
     *,
     started_at: datetime,
@@ -23,13 +42,16 @@ def write_run_summary(
     step: Optional[str] = None,
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
+    warning_count: int = 0,
     summary_file: Path = RUN_SUMMARY_FILE,
 ) -> None:
     """Append one compact, human-readable status line for an application run."""
     duration_seconds = max(0, int((finished_at - started_at).total_seconds()))
-    if status == "SUCCESS":
+    if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
         description = f"{days} Tage verarbeitet" if days else "Keine neuen Tage verarbeitet"
         details = description
+        if warning_count:
+            details += f", Warnungen: {warning_count}"
     else:
         details = f"Fehler in {_summary_value(step or 'unbekannt')}"
         if error_type:

@@ -68,11 +68,13 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
             field="daily_pv",
             measurement=self.output_measurement,
         )
+        existing_last_data_day = last_data_day
         if not last_data_day:
             last_data_day = self.first_data_day - timedelta(days=1)
 
         days_to_process = get_days_to_process(last_data_day)
         if not days_to_process:
+            self.last_complete_date = existing_last_data_day
             logger.info("No heat pump statistic days to process")
             return 0
 
@@ -80,6 +82,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
         for day in days_to_process:
             self._process_day(day, self.source_version)
 
+        self.last_complete_date = days_to_process[-1]
         return len(days_to_process)
 
     def _sensor(self, role: str) -> Dict[str, str]:
@@ -283,6 +286,16 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                     measurement="fix_waermepumpe_stromverbrauch",
                 )
             )
+            if not pump_records[pump_role]:
+                raise RuntimeError(
+                    "No source counter data found for heat pump statistics: "
+                    f"day={day.isoformat()}, bucket={self.output_bucket!r}, "
+                    "measurement='fix_waermepumpe_stromverbrauch', "
+                    f"entity_id={counter['entity_id']!r}, "
+                    f"field={counter['field']!r}, "
+                    f"source_version={source_version!r}. "
+                    "Check the configured Waermepumpe_statistik.source_version."
+                )
             compressor = self._sensor(compressor_role)
             activity_events[compressor_role] = self._sorted_records(
                 self.influx_handler.get_data(

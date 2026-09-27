@@ -42,12 +42,14 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
             field="value",
             measurement=self.output_measurement,
         )
+        existing_last_day = last_day
         if last_day is None:
             last_day = self.first_data_day - timedelta(days=1)
 
         days = get_days_to_process(last_day)
         for day in days:
             self._process_day(day)
+        self.last_complete_date = days[-1] if days else existing_last_day
         return len(days)
 
     def _process_day(self, day: date) -> None:

@@ -38,7 +38,7 @@ def test_main_runs_with_fakes(monkeypatch):
     summaries = []
 
     monkeypatch.setattr(main_module, "parse_arguments", lambda: argparse.Namespace(stage="prod", log_level="INFO", log_file=None))
-    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"processing": {"input_bucket": "i", "output_bucket": "o", "entities_to_process": {}}})
+    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"mqtt": {"enabled": False}, "processing": {"input_bucket": "i", "output_bucket": "o", "entities_to_process": {}}})
     monkeypatch.setattr(main_module, "setup_environment", lambda stage: None)
     monkeypatch.setattr(main_module, "InfluxDBHandler", FakeHandler)
     monkeypatch.setattr(main_module, "HomeAssistantProcessor", FakeProcessor)
@@ -56,7 +56,7 @@ def test_main_reports_keyboard_interrupt(monkeypatch):
     summaries = []
 
     monkeypatch.setattr(main_module, "parse_arguments", lambda: argparse.Namespace(stage="prod", log_level="INFO", log_file=None))
-    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"processing": {"input_bucket": "i", "output_bucket": "o", "entities_to_process": {}}})
+    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"mqtt": {"enabled": False}, "processing": {"input_bucket": "i", "output_bucket": "o", "entities_to_process": {}}})
     monkeypatch.setattr(main_module, "setup_environment", lambda stage: None)
     monkeypatch.setattr(main_module, "InfluxDBHandler", FakeHandler)
     monkeypatch.setattr(main_module, "HomeAssistantProcessor", InterruptingProcessor)
@@ -66,7 +66,7 @@ def test_main_reports_keyboard_interrupt(monkeypatch):
     exit_code = main_module.main()
 
     assert exit_code == 130
-    assert summaries[0]["status"] == "ERROR"
+    assert summaries[0]["status"] == "FAILED"
     assert summaries[0]["error_type"] == "KeyboardInterrupt"
     assert summaries[0]["error_message"] == "Lauf manuell abgebrochen"
 
@@ -79,11 +79,11 @@ def test_main_reports_connection_failure(monkeypatch):
     monkeypatch.setattr(main_module, "parse_arguments", lambda: argparse.Namespace(stage="prod", log_level="INFO", log_file=None))
     monkeypatch.setattr(main_module, "setup_environment", lambda stage: None)
     monkeypatch.setattr(main_module, "InfluxDBHandler", lambda: type("Handler", (), {"connect": lambda self: False, "disconnect": lambda self: None})())
-    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"processing": {"input_bucket": "input"}})
+    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"mqtt": {"enabled": False}, "processing": {"input_bucket": "input"}})
     monkeypatch.setattr(main_module, "get_logger", lambda **kwargs: importlib.import_module("logging").getLogger("main-connection-error"))
     monkeypatch.setattr(main_module, "write_run_summary", lambda **kwargs: summaries.append(kwargs))
 
     assert main_module.main() == 1
-    assert summaries[0]["status"] == "ERROR"
+    assert summaries[0]["status"] == "FAILED"
     assert summaries[0]["step"] == "InfluxDB connection"
     assert summaries[0]["error_type"] == "RuntimeError"

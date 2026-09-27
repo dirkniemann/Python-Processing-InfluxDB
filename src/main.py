@@ -8,12 +8,13 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
 
-from moduls.logger_setup import get_logger, write_run_summary
+from moduls.logger_setup import RunWarningCollector, get_logger, write_run_summary
+from moduls.mqtt_status import MQTTConfig, MQTTStatusPublisher, RunDiagnostics
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.processing.HomeAssistant_processing import HomeAssistantProcessor
 from moduls.szenarios.scenario_config import load_scenario_configuration
@@ -96,7 +97,7 @@ def main() -> int:
     Returns:
         Exit code
     """
-    start_time = datetime.now()
+    start_time = datetime.now(timezone.utc)
     finished_time = start_time
     stage = "unknown"
     logger = None
@@ -105,6 +106,9 @@ def main() -> int:
     step = "argument parsing"
     error = None
     exit_code = 0
+    warning_collector = None
+    mqtt_publisher = None
+    last_processed_date = None
 
     try:
         args = parse_arguments()
@@ -129,6 +133,13 @@ def main() -> int:
         config = load_configuration(args.stage)
         logger.debug("Configuration loaded successfully")
 
+        warning_collector = RunWarningCollector()
+        logging.getLogger().addHandler(warning_collector)
+        mqtt_config = MQTTConfig.from_mapping(config.get("mqtt"), args.stage)
+        mqtt_publisher = MQTTStatusPublisher(mqtt_config, args.stage)
+        if mqtt_publisher.connect():
+            mqtt_publisher.publish_running(start_time)
+
         step = "InfluxDB connection"
         influx_handler = InfluxDBHandler()
         if not influx_handler.connect():
@@ -150,7 +161,13 @@ def main() -> int:
         )
 
         step = "data processing"
-        days_processed = ha_processor.process_data()
+        processing_result = ha_processor.process_data()
+        days_processed = (
+            processing_result.processed_days
+            if hasattr(processing_result, "processed_days")
+            else processing_result or 0
+        )
+        last_processed_date = getattr(processing_result, "last_complete_date", None)
 
         if "scenarios" in config:
             step = "battery scenario simulation"
@@ -163,6 +180,11 @@ def main() -> int:
             scenario_days = scenario_runner.process()
             scenario_runner.validate_real_battery()
             days_processed = max(days_processed, scenario_days)
+            scenario_date = getattr(scenario_runner, "last_complete_date", None)
+            if scenario_date is not None and last_processed_date is not None:
+                last_processed_date = min(last_processed_date, scenario_date)
+            elif scenario_date is not None:
+                last_processed_date = scenario_date
         step = "completed"
     except KeyboardInterrupt as exc:
         error = exc
@@ -191,8 +213,12 @@ def main() -> int:
                 if logger:
                     logger.error(f"Run failed during disconnect: {exc}", exc_info=True)
 
-        finished_time = datetime.now()
-        status = "ERROR" if error else "SUCCESS"
+        finished_time = datetime.now(timezone.utc)
+        status = "FAILED" if error else (
+            "SUCCESS_WITH_WARNINGS"
+            if warning_collector and warning_collector.warning_count
+            else "SUCCESS"
+        )
         try:
             write_run_summary(
                 started_at=start_time,
@@ -207,6 +233,7 @@ def main() -> int:
                     if error is None
                     else str(error) or "Lauf manuell abgebrochen"
                 ),
+                warning_count=warning_collector.warning_count if warning_collector else 0,
             )
         except Exception as summary_error:
             message = f"Unable to write run summary: {summary_error}"
@@ -216,6 +243,30 @@ def main() -> int:
                 print(message, file=sys.stderr)
             error = error or summary_error
             exit_code = exit_code or 1
+
+        if mqtt_publisher:
+            diagnostics = RunDiagnostics()
+            if warning_collector:
+                diagnostics.warning_count = warning_collector.warning_count
+                diagnostics.warning_components = set(warning_collector.warning_components)
+                diagnostics.warning_examples = list(warning_collector.warning_examples)
+            try:
+                mqtt_publisher.publish_result(
+                    status=status,
+                    started_at=start_time,
+                    finished_at=finished_time,
+                    days_processed=days_processed,
+                    last_processed_date=last_processed_date,
+                    diagnostics=diagnostics,
+                    error=error,
+                )
+                mqtt_publisher.disconnect()
+            except Exception as mqtt_error:
+                if logger:
+                    logger.warning("Unable to finalize MQTT status: %s", mqtt_error)
+
+        if warning_collector:
+            logging.getLogger().removeHandler(warning_collector)
 
     if error:
         return exit_code or 1

@@ -1,4 +1,22 @@
 {
+    "mqtt": {
+        "enabled": true,
+        "host": "192.168.178.124",
+        "port": 1883,
+        "tls": false,
+        "username_env": "MQTT_USERNAME",
+        "password_env": "MQTT_PASSWORD",
+        "client_id": "python-processing-prod",
+        "topic_prefix": "python-processing",
+        "discovery_prefix": "homeassistant",
+        "qos": 1,
+        "keepalive": 30,
+        "connect_timeout_seconds": 5,
+        "publish_timeout_seconds": 5,
+        "retries": 2,
+        "heartbeat_interval_seconds": 60,
+        "state_file": "logs/mqtt_status_prod.json"
+    },
     "processing": {
         "input_bucket": "HomeAssistant",
         "output_bucket": "HomeAssistant_processed",
