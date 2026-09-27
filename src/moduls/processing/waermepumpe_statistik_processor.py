@@ -59,7 +59,7 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
         self.compressor_post_run_minutes = compressor_post_run_minutes
         self.emit_daily_summary = emit_daily_summary
 
-    def process(self) -> None:
+    def process(self) -> int:
         """Process all complete days not yet present for this calculation version."""
         last_data_day = self.influx_handler.get_last_data_day(
             bucket=self.output_bucket,
@@ -74,11 +74,13 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
         days_to_process = get_days_to_process(last_data_day)
         if not days_to_process:
             logger.info("No heat pump statistic days to process")
-            return
+            return 0
 
         logger.info("Processing %d heat pump statistic days", len(days_to_process))
         for day in days_to_process:
             self._process_day(day, self.source_version)
+
+        return len(days_to_process)
 
     def _sensor(self, role: str) -> Dict[str, str]:
         try:

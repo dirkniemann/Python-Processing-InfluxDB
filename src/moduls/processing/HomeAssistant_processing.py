@@ -280,22 +280,26 @@ class HomeAssistantProcessor:
         self.processors.append(processor)
         logger.debug(f"Initialized WaermepumpeStatistikProcessor with roles {sorted(sensors)} (version: {version})")
 
-    def process_data(self) -> None:
+    def process_data(self) -> int:
         """Run all configured processors in order.
 
         Args:
             None
         Returns:
-            None. Side-effects: each processor performs its own writes.
+            Number of calendar days processed by the configured processors.
         """
         logger.info("Starting data processing...")
-        
+        processed_days = 0
+
         for processor in self.processors:
             try:
                 logger.info(f"Running processor: {processor.__class__.__name__}")
-                processor.process()
+                processor_days = processor.process()
+                if isinstance(processor_days, int):
+                    processed_days = max(processed_days, processor_days)
             except Exception as e:
                 logger.error(f"Error in processor {processor.__class__.__name__}: {e}", exc_info=True)
                 raise RuntimeError(f"Processing failed in {processor.__class__.__name__}") from e
         
         logger.info("Data processing completed.")
+        return processed_days

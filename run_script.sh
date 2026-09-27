@@ -5,24 +5,10 @@ set -euo pipefail
 PATH=/usr/local/bin:/usr/bin:/bin
 REPO_DIR=/opt/Python-Processing-InfluxDB
 VENV_DIR=/opt/Python-Processing-InfluxDB/venv
-LOG_FILE=${LOG_FILE:-/var/log/Python_Auswertung/cronjob/cronjob.log}
-
-# Ensure log file exists and append both stdout/stderr to it while keeping console output
-mkdir -p "$(dirname "$LOG_FILE")"
-touch "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
+REQUIREMENTS_STATE=/var/lib/Python_Auswertung/requirements.sha256
 
 cd "$REPO_DIR"
 
-echo "[$(date -Is)] Starting run_script"
-echo "[$(date -Is)] Pulling latest code from git repository at $REPO_DIR"
-# Pull latest code
-if ! git pull; then
-    echo "[$(date -Is)] Error: git pull failed" >&2
-    exit 1
-fi
-
-# Activate virtualenv
 if [ -f "$VENV_DIR/bin/activate" ]; then
     # shellcheck source=/dev/null
     source "$VENV_DIR/bin/activate"
@@ -31,10 +17,11 @@ else
     exit 1
 fi
 
-# Install deps when requirements changed in last commit range
-if git diff --name-only HEAD~1..HEAD | grep -q "requirements"; then
-    pip install -r requirements.txt
+requirements_hash=$(sha256sum requirements.txt | awk '{print $1}')
+if [ ! -f "$REQUIREMENTS_STATE" ] || [ "$(cat "$REQUIREMENTS_STATE")" != "$requirements_hash" ]; then
+    python -m pip install -r requirements.txt
+    mkdir -p "$(dirname "$REQUIREMENTS_STATE")"
+    printf '%s\n' "$requirements_hash" > "$REQUIREMENTS_STATE"
 fi
-echo "[$(date -Is)] Running main.py with stage prod"
-python src/main.py --stage prod
-echo "[$(date -Is)] Finished run_script"
+
+exec python src/main.py --stage prod

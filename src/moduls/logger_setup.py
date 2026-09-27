@@ -5,6 +5,49 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 
+RUN_SUMMARY_FILE = Path("/var/log/Python_Auswertung/runs.log")
+
+
+def _summary_value(value: str) -> str:
+    """Keep one-line fields free of whitespace and control characters."""
+    return "_".join(str(value).replace("\r", " ").replace("\n", " ").split())
+
+
+def write_run_summary(
+    *,
+    started_at: datetime,
+    finished_at: datetime,
+    stage: str,
+    status: str,
+    days: int = 0,
+    step: Optional[str] = None,
+    error_type: Optional[str] = None,
+    error_message: Optional[str] = None,
+    summary_file: Path = RUN_SUMMARY_FILE,
+) -> None:
+    """Append one compact, human-readable status line for an application run."""
+    duration_seconds = max(0, int((finished_at - started_at).total_seconds()))
+    if status == "SUCCESS":
+        description = f"{days} Tage verarbeitet" if days else "Keine neuen Tage verarbeitet"
+        details = description
+    else:
+        details = f"Fehler in {_summary_value(step or 'unbekannt')}"
+        if error_type:
+            details += f" ({_summary_value(error_type)})"
+        if error_message:
+            details += f": {_summary_value(error_message)}"
+
+    line = (
+        f"{started_at.strftime('%Y-%m-%d %H:%M:%S')} | "
+        f"{_summary_value(status)} | "
+        f"{details} | Dauer: {duration_seconds} s\n"
+    )
+
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    with summary_file.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+
+
 class LoggerSetup:
     """
     Centralized logging configuration for the application.

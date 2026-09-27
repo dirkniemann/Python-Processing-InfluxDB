@@ -9,13 +9,13 @@ logger = logging.getLogger(__name__)
 class DailyAggregateProcessor(EntityProcessor):
     """Processor for daily aggregate entities."""
 
-    def process(self) -> None:
+    def process(self) -> int:
         """Calculate daily sums and write them to the output bucket.
 
         Args:
             None
         Returns:
-            None. Writes per-entity daily sums plus a combined entity aggregate.
+            Number of calendar days processed.
         """
         logger.info(
             f"Processing {len(self.entities)} daily aggregate entities (version: {self.version})"
@@ -39,7 +39,7 @@ class DailyAggregateProcessor(EntityProcessor):
 
         if not days_to_process:
             logger.warning("No days to process for the daily aggregate entities")
-            return
+            return 0
 
         logger.info(f"Processing {len(days_to_process)} days for {self.output_entity_id}")
 
@@ -57,6 +57,8 @@ class DailyAggregateProcessor(EntityProcessor):
 
         for day in days_to_process:
             self._process_day(day, last_version)
+
+        return len(days_to_process)
 
     def _process_day(self, day: datetime.date, last_version: str) -> None:
         """Process a single day for all configured entities.

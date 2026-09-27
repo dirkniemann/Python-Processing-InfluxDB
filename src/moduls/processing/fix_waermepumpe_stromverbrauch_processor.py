@@ -13,13 +13,13 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
     monotonic consumption per day before persisting cleaned data.
     """
 
-    def process(self) -> None:
+    def process(self) -> int:
         """Correct daily consumption curves and write cleaned values to the output bucket.
 
         Args:
             None
         Returns:
-            None. Side-effects: writes cleaned records for each entity/day to the output bucket.
+            Number of calendar days processed.
         """
 
         last_data_day = self.influx_handler.get_last_data_day(
@@ -40,12 +40,14 @@ class FixWaermepumpeStromverbrauchProcessor(EntityProcessor):
 
         if not days_to_process:
             logger.info(f"No days to process for {self.entities[0]}")
-            return
+            return 0
 
         logger.info(f"Processing {len(days_to_process)} days.")
 
         for day in days_to_process:
             self._process_day(day)
+
+        return len(days_to_process)
 
     def _process_day(self, day: datetime.date) -> None:
         """Normalize one day of readings by locating resets and fixing misordered timestamps.
