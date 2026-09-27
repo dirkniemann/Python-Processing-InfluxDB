@@ -5,7 +5,7 @@ import pytz
 import pytest
 
 
-def test_process_day_unions_events_and_holds_previous_values(fake_influx_module):
+def test_process_day_writes_time_weighted_interval_means(fake_influx_module):
     module = importlib.import_module(
         "moduls.processing.corrected_house_consumption_processor"
     )
@@ -13,13 +13,13 @@ def test_process_day_unions_events_and_holds_previous_values(fake_influx_module)
 
     utc = pytz.UTC
     source_values = {
-    "load": [
+        "load": [
             {"time": utc.localize(datetime(2026, 1, 1, 23, 0)), "value": 100},
-            {"time": utc.localize(datetime(2026, 1, 2, 1, 0)), "value": 120},
+            {"time": utc.localize(datetime(2026, 1, 2, 1, 2)), "value": 120},
         ],
         "pv": [
             {"time": utc.localize(datetime(2026, 1, 1, 23, 30)), "value": 10},
-            {"time": utc.localize(datetime(2026, 1, 2, 2, 0)), "value": 20},
+            {"time": utc.localize(datetime(2026, 1, 2, 2, 1)), "value": 20},
         ],
     }
 
@@ -60,8 +60,22 @@ def test_process_day_unions_events_and_holds_previous_values(fake_influx_module)
 
     processor._process_day(date(2026, 1, 2))
 
-    assert [write["value"] for write in handler.writes] == pytest.approx([110, 110, 130, 140])
-    assert [write["timestamp"].hour for write in handler.writes] == [23, 23, 1, 2]
+    values = [write["value"] for write in handler.writes]
+    timestamps = [write["timestamp"] for write in handler.writes]
+
+    assert len(handler.writes) == 288
+    assert values[:24] == pytest.approx([110] * 24)
+    assert values[24] == pytest.approx(122)
+    assert values[25:36] == pytest.approx([130] * 11)
+    assert values[36] == pytest.approx(138)
+    assert values[37:] == pytest.approx([140] * (288 - 37))
+    assert timestamps[0] == utc.localize(datetime(2026, 1, 1, 23, 0))
+    assert timestamps[24] == utc.localize(datetime(2026, 1, 2, 1, 0))
+    assert timestamps[36] == utc.localize(datetime(2026, 1, 2, 2, 0))
+    assert all(
+        (later - earlier).total_seconds() == 300
+        for earlier, later in zip(timestamps, timestamps[1:])
+    )
 
 
 def test_process_day_rejects_missing_start_state(fake_influx_module):
