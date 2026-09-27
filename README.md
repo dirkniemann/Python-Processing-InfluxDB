@@ -41,7 +41,7 @@ Der konfigurierte Rechenweg lautet:
 
     elektrischer_verbrauch + mt_stall_neu_leistung_ac_fixed
 
-Beide Quellen werden als Change-only-Leistungswerte behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; der Zustand vor Tagesbeginn wird geladen. Die Leistung wird energieerhaltend zeitgewichtet in gemeinsame Intervalle gemittelt (dev/prod: 300 Sekunden, über `interval_seconds` konfigurierbar), danach addiert und bei negativer Intervallsumme auf null begrenzt. Ausgegeben wird der Mittelwert mit dem Zeitstempel des Intervallstarts. Die Korrektur läuft in Version v3; die Batterieszenarien lesen ebenfalls v3. Der Quellwert elektrischer_verbrauch wird laut bisheriger Anlagenklärung nicht unverändert als Simulationslast verwendet.
+Beide Quellen werden als Change-only-Leistungswerte behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; ein Zustand vor Tagesbeginn wird geladen, falls vorhanden. Fehlt am ersten Datentag ein Quellzustand, werden unvollständige Anfangsintervalle ausgelassen, bis beide Quellen bekannt sind. Die Leistung wird energieerhaltend zeitgewichtet in gemeinsame Intervalle gemittelt (dev/prod: 300 Sekunden, über `interval_seconds` konfigurierbar), danach addiert und bei negativer Intervallsumme auf null begrenzt. Ausgegeben wird der Mittelwert mit dem Zeitstempel des Intervallstarts. Die Korrektur läuft in Version v3; die Batterieszenarien lesen ebenfalls v3. Der Quellwert elektrischer_verbrauch wird laut bisheriger Anlagenklärung nicht unverändert als Simulationslast verwendet.
 
 ### Batteriesimulation
 
