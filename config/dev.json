@@ -104,7 +104,7 @@
                 "measurement": "Hausverbrauch_korrigiert",
                 "entity_id": "Hausverbrauch_korrigiert",
                 "field": "value",
-                "version": "v1",
+                "version": "v2",
                 "change_only": true
             },
             "fems_pv": {
