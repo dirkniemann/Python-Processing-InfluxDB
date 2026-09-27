@@ -86,20 +86,41 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
             raise ValueError(f"No input data found for corrected house consumption on {day}")
 
         source_roles = set(self.sources)
-        missing_at_start = sorted(source_roles - set(values))
-        if missing_at_start:
-            raise ValueError(
-                f"Missing source state at start of corrected house consumption on {day}: {missing_at_start}"
-            )
-
         ordered_events = sorted(events.items())
         event_index = 0
         bin_start = day_start
+        written_intervals = 0
+        skipped_initial_intervals = 0
         while bin_start < day_end:
             bin_end = min(
                 bin_start + timedelta(seconds=self.interval_seconds),
                 day_end,
             )
+
+            # Apply changes exactly on the interval boundary before deciding
+            # whether this interval has complete source coverage.
+            while (
+                event_index < len(ordered_events)
+                and ordered_events[event_index][0] <= bin_start
+            ):
+                values.update(ordered_events[event_index][1])
+                event_index += 1
+
+            if set(values) != source_roles:
+                # At the beginning of the first data day, one or both sensors
+                # may not yet have a known state. Never invent a value or
+                # average only part of a 5-minute interval as if it covered
+                # the whole interval. Skip until the next fully covered bin.
+                while (
+                    event_index < len(ordered_events)
+                    and ordered_events[event_index][0] < bin_end
+                ):
+                    values.update(ordered_events[event_index][1])
+                    event_index += 1
+                skipped_initial_intervals += 1
+                bin_start = bin_end
+                continue
+
             covered_seconds = (bin_end - bin_start).total_seconds()
             energy_w_seconds = {role: 0.0 for role in source_roles}
             cursor = bin_start
@@ -126,7 +147,27 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
                 for role, energy in energy_w_seconds.items()
             }
             self._write_value(bin_start, interval_means)
+            written_intervals += 1
             bin_start = bin_end
+
+        if written_intervals == 0:
+            missing = sorted(source_roles - set(values))
+            detail = f"; missing source states: {missing}" if missing else ""
+            logger.warning(
+                "No complete %s-second intervals available for corrected house "
+                "consumption on %s%s; skipping this day",
+                self.interval_seconds,
+                day,
+                detail,
+            )
+            return
+        if skipped_initial_intervals:
+            logger.warning(
+                "Skipped %s initial interval(s) for corrected house consumption on %s "
+                "because source state was not yet known",
+                skipped_initial_intervals,
+                day,
+            )
 
     def _load_start_values(self, day_start: datetime) -> Dict[str, Any]:
         values: Dict[str, Any] = {}
