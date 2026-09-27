@@ -88,7 +88,7 @@ pytest
 ## Logging
 - Console + detailed file logging via `moduls.logger_setup`.
 - Production runs append exactly one compact status line to `/var/log/Python_Auswertung/runs.log`.
-- The summary is deliberately human-readable, with date/time, stage, status, processing result, and duration:
+- The summary is deliberately human-readable, with date/time, status, processing result, and duration:
 	```
 	2026-09-27 04:00:01 | SUCCESS | 3 Tage verarbeitet | Dauer: 42 s
 	2026-09-28 04:00:01 | SUCCESS | Keine neuen Tage verarbeitet | Dauer: 4 s
@@ -97,9 +97,9 @@ pytest
 - Failed lines contain the processing step, exception type and a sanitized error message. Credentials and raw measurements are never written to the summary.
 - The detailed timestamp-based logs remain available for diagnosis. The summary is rotated by Linux `logrotate` at 10 MB and keeps ten compressed backups.
 
-## Proxmox LXC deployment
+## Installation auf einem neuen Zielsystem
 
-Steps to run this on a Proxmox LXC (Debian/Ubuntu base):
+Steps for a new Proxmox LXC or Debian/Ubuntu system:
 
 1) Create the container
 - Create an unprivileged LXC with enough RAM/CPU for your data volume.
@@ -136,7 +136,13 @@ nano .env
 	```bash
 	chmod +x /opt/Python-Processing-InfluxDB/run_script.sh
 	```
-- Install the external launcher once as described below. Then use the provided cron snippet [cron.d_influx_job](cron.d_influx_job):
+- Install the stable launcher outside the repository and install the logrotate rule:
+	```bash
+	install -m 0755 /opt/Python-Processing-InfluxDB/deploy/launcher/python-auswertung-launcher /usr/local/sbin/python-auswertung-launcher
+	install -D -m 0644 /opt/Python-Processing-InfluxDB/deploy/logrotate/python-auswertung /etc/logrotate.d/python-auswertung
+	logrotate -d /etc/logrotate.conf
+	```
+- Then install the provided cron snippet [cron.d_influx_job](cron.d_influx_job):
 	```bash
 	cp cron.d_influx_job /etc/cron.d/influx_job
 	chmod 644 /etc/cron.d/influx_job
@@ -154,51 +160,6 @@ nano .env
 - ```bash
 	/usr/local/sbin/python-auswertung-launcher
 	```
-
-### Einmalige Migration auf dem bestehenden Zielgerät
-
-Diese Schritte sind nur für die Umstellung einer bestehenden Installation nötig. Danach übernimmt der externe Launcher den täglichen Pull und die Anwendung muss nicht mehr manuell kopiert werden.
-
-1. Bestehenden Zustand sichern:
-	```bash
-	sudo crontab -l > /root/python-auswertung-crontab.backup 2>/dev/null || true
-	sudo cp /etc/cron.d/influx_job /root/influx_job.backup
-	sudo cp -a /opt/Python-Processing-InfluxDB /root/Python-Processing-InfluxDB.backup
-	```
-2. Prüfen, dass kein Lauf aktiv ist. Während der Umstellung darf der alte Cron-Eintrag nicht parallel zum neuen Launcher laufen.
-3. Repository einmalig aktualisieren:
-	```bash
-	cd /opt/Python-Processing-InfluxDB
-	sudo git pull --ff-only origin master
-	```
-4. Prüfen, dass `root` Zugriff auf das Git-Repository und die konfigurierte Git-Authentifizierung hat. `.env`, `venv/` und `logs/` bleiben außerhalb der Git-Änderungen und werden nicht durch `git pull` überschrieben.
-5. Abhängigkeiten einmalig aktualisieren:
-	```bash
-	sudo /opt/Python-Processing-InfluxDB/venv/bin/python -m pip install -r /opt/Python-Processing-InfluxDB/requirements.txt
-	```
-6. Den stabilen Launcher außerhalb des Repositories installieren:
-	```bash
-	sudo install -m 0755 /opt/Python-Processing-InfluxDB/deploy/launcher/python-auswertung-launcher /usr/local/sbin/python-auswertung-launcher
-	```
-7. Die Logrotate-Regel erstmalig installieren und sicher prüfen:
-	```bash
-	sudo install -D -m 0644 /opt/Python-Processing-InfluxDB/deploy/logrotate/python-auswertung /etc/logrotate.d/python-auswertung
-	sudo logrotate -d /etc/logrotate.conf
-	```
-	Der Dry-Run darf keine Rotation erzwingen. `logrotate -f` gehört nicht in die tägliche Ausführung.
-8. Launcher einmalig manuell ausführen und kontrollieren:
-	```bash
-	sudo /usr/local/sbin/python-auswertung-launcher
-	sudo tail -n 5 /var/log/Python_Auswertung/runs.log
-	```
-9. Cron-Eintrag auf die neue Version umstellen:
-	```bash
-	sudo install -m 0644 /opt/Python-Processing-InfluxDB/cron.d_influx_job /etc/cron.d/influx_job
-	sudo service cron reload
-	```
-10. Einen abschließenden manuellen Launcher-Lauf ausführen und sicherstellen, dass `/etc/cron.d/influx_job` nicht noch den direkten Aufruf von `run_script.sh` enthält.
-
-Nach dieser Migration reicht ein normaler Merge in `master`. Der Cron-Launcher führt danach automatisch `git pull --ff-only`, aktualisiert die Logrotate-Regel bei Änderungen, validiert sie und startet anschließend den neuen Repository-Stand.
 
 ## How it is implemented (internals)
 - **Entry point**: `src/main.py` parses CLI, loads `.env`, selects stage config, sets up logging, and orchestrates connection/processing.
