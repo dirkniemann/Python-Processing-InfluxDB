@@ -102,6 +102,7 @@ def main() -> int:
     days_processed = 0
     step = "argument parsing"
     error = None
+    exit_code = 0
 
     try:
         args = parse_arguments()
@@ -149,8 +150,16 @@ def main() -> int:
         step = "data processing"
         days_processed = ha_processor.process_data()
         step = "completed"
+    except KeyboardInterrupt as exc:
+        error = exc
+        exit_code = 130
+        if logger:
+            logger.error(f"Run interrupted during {step}", exc_info=True)
+        else:
+            print(f"Run interrupted during {step}", file=sys.stderr)
     except Exception as exc:
         error = exc
+        exit_code = 1
         if logger:
             logger.error(f"Run failed during {step}: {exc}", exc_info=True)
         else:
@@ -177,7 +186,11 @@ def main() -> int:
                 days=days_processed,
                 step=None if status == "SUCCESS" else step,
                 error_type=None if error is None else type(error).__name__,
-                error_message=None if error is None else str(error),
+                error_message=(
+                    None
+                    if error is None
+                    else str(error) or "Lauf manuell abgebrochen"
+                ),
             )
         except Exception as summary_error:
             message = f"Unable to write run summary: {summary_error}"
@@ -186,9 +199,10 @@ def main() -> int:
             else:
                 print(message, file=sys.stderr)
             error = error or summary_error
+            exit_code = exit_code or 1
 
     if error:
-        return 1
+        return exit_code or 1
 
     if logger:
         logger.info(f"Application completed successfully. Duration: {finished_time - start_time}")

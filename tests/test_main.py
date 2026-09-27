@@ -27,6 +27,11 @@ class FakeProcessor:
         self.called = True
 
 
+class InterruptingProcessor(FakeProcessor):
+    def process_data(self):
+        raise KeyboardInterrupt
+
+
 def test_main_runs_with_fakes(monkeypatch):
     main_module = importlib.import_module("main")
     importlib.reload(main_module)
@@ -43,3 +48,24 @@ def test_main_runs_with_fakes(monkeypatch):
     exit_code = main_module.main()
     assert exit_code == 0
     assert summaries[0]["status"] == "SUCCESS"
+
+
+def test_main_reports_keyboard_interrupt(monkeypatch):
+    main_module = importlib.import_module("main")
+    importlib.reload(main_module)
+    summaries = []
+
+    monkeypatch.setattr(main_module, "parse_arguments", lambda: argparse.Namespace(stage="prod", log_level="INFO", log_file=None))
+    monkeypatch.setattr(main_module, "load_configuration", lambda stage: {"processing": {"input_bucket": "i", "output_bucket": "o", "entities_to_process": {}}})
+    monkeypatch.setattr(main_module, "setup_environment", lambda stage: None)
+    monkeypatch.setattr(main_module, "InfluxDBHandler", FakeHandler)
+    monkeypatch.setattr(main_module, "HomeAssistantProcessor", InterruptingProcessor)
+    monkeypatch.setattr(main_module, "get_logger", lambda **kwargs: importlib.import_module("logging").getLogger("main-interrupt-test"))
+    monkeypatch.setattr(main_module, "write_run_summary", lambda **kwargs: summaries.append(kwargs))
+
+    exit_code = main_module.main()
+
+    assert exit_code == 130
+    assert summaries[0]["status"] == "ERROR"
+    assert summaries[0]["error_type"] == "KeyboardInterrupt"
+    assert summaries[0]["error_message"] == "Lauf manuell abgebrochen"
