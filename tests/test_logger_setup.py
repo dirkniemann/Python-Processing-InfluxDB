@@ -52,3 +52,34 @@ def test_write_run_summary_appends_one_sanitized_line(tmp_path):
     assert "Fehler in data_processing (RuntimeError): token_was_not_included" in lines[0]
     assert "Dauer: 3 s" in lines[0]
     assert "\n" not in lines[0]
+
+
+def test_run_warning_collector_counts_and_limits_examples():
+    module = importlib.import_module("moduls.logger_setup")
+    collector = module.RunWarningCollector(max_examples=1, max_message_length=12)
+    record = logging.LogRecord("processor", logging.WARNING, __file__, 1, "warning\nmessage", (), None)
+
+    collector.emit(record)
+    collector.emit(record)
+
+    assert collector.warning_count == 2
+    assert collector.warning_components == {"processor"}
+    assert collector.warning_examples == ["warning_mess"]
+
+
+def test_write_run_summary_includes_warning_count(tmp_path):
+    module = importlib.import_module("moduls.logger_setup")
+    summary_file = tmp_path / "runs.log"
+
+    module.write_run_summary(
+        started_at=datetime(2026, 9, 27, 4, 0, 0),
+        finished_at=datetime(2026, 9, 27, 4, 0, 3),
+        stage="prod",
+        status="SUCCESS_WITH_WARNINGS",
+        days=2,
+        warning_count=3,
+        summary_file=summary_file,
+    )
+
+    assert "SUCCESS_WITH_WARNINGS" in summary_file.read_text(encoding="utf-8")
+    assert "Warnungen: 3" in summary_file.read_text(encoding="utf-8")

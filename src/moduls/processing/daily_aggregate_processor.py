@@ -29,6 +29,7 @@ class DailyAggregateProcessor(EntityProcessor):
             measurement=self.output_measurement,
         )
 
+        existing_last_data_day = last_data_day
         if not last_data_day:
             logger.debug(
                 f"No existing data for {self.output_entity_id} in output bucket, starting from first data day"
@@ -38,6 +39,7 @@ class DailyAggregateProcessor(EntityProcessor):
         days_to_process = get_days_to_process(last_data_day)
 
         if not days_to_process:
+            self.last_complete_date = existing_last_data_day
             logger.warning("No days to process for the daily aggregate entities")
             return 0
 
@@ -58,6 +60,7 @@ class DailyAggregateProcessor(EntityProcessor):
         for day in days_to_process:
             self._process_day(day, last_version)
 
+        self.last_complete_date = days_to_process[-1]
         return len(days_to_process)
 
     def _process_day(self, day: datetime.date, last_version: str) -> None:

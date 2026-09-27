@@ -45,6 +45,7 @@ class BatteryScenarioRunner:
         self.first_data_day = first_data_day
         self.output_bucket = scenario_config.buckets["output_bucket"]
         self._input_cache: Dict[Tuple[date, Tuple[str, ...]], InputDay] = {}
+        self.last_complete_date: Optional[date] = None
 
     def process(self, last_day: Optional[date] = None) -> int:
         if not self.configuration.definitions:
@@ -55,18 +56,30 @@ class BatteryScenarioRunner:
             return 0
 
         processed_days = 0
+        complete_dates: List[date] = []
         for scenario_name, definition in self.configuration.definitions.items():
             for pv_mode in self.configuration.pv_modes:
                 required_sources = self._required_sources(pv_mode)
                 input_days = self._collect_input_days(available_end, required_sources)
                 if not input_days:
                     continue
+                combination_days = self._process_combination_plan(
+                    scenario_name, pv_mode, definition, input_days
+                )
                 processed_days = max(
                     processed_days,
-                    self._process_combination_plan(
-                        scenario_name, pv_mode, definition, input_days
-                    ),
+                    combination_days,
                 )
+                stored_complete = self._last_complete_day(
+                    self._stored_daily_records(scenario_name, pv_mode)
+                )
+                if stored_complete is not None:
+                    complete_dates.append(stored_complete)
+                elif combination_days:
+                    complete_dates.extend(
+                        day for day, input_day in input_days.items() if input_day.complete
+                    )
+        self.last_complete_date = min(complete_dates) if complete_dates else None
         return processed_days
 
     def validate_real_battery(self, last_day: Optional[date] = None) -> Optional[BatteryValidationReport]:

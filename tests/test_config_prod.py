@@ -11,6 +11,13 @@ def test_prod_config_structure():
         cfg = json.load(f)
 
     assert "processing" in cfg
+    mqtt = cfg["mqtt"]
+    assert mqtt["enabled"] is True
+    assert mqtt["host"]
+    assert 1 <= mqtt["port"] <= 65535
+    assert mqtt["discovery_prefix"] == "homeassistant"
+    assert "password" not in mqtt
+    assert "token" not in mqtt
     processing = cfg["processing"]
     assert processing["input_bucket"]
     assert processing["output_bucket"]

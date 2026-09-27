@@ -1,6 +1,7 @@
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.influxdb_handler import LOCAL_TZ
 from moduls.processing.daily_aggregate_processor import DailyAggregateProcessor
@@ -9,6 +10,12 @@ from moduls.processing.fix_waermepumpe_stromverbrauch_processor import FixWaerme
 from moduls.processing.corrected_house_consumption_processor import CorrectedHouseConsumptionProcessor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProcessingResult:
+    processed_days: int
+    last_complete_date: Optional[date]
 
 def get_days_to_process(last_data_day: date) -> List[date]:
     """Return all days between ``last_data_day`` (exclusive) and yesterday.
@@ -54,6 +61,7 @@ class EntityProcessor:
         self.first_data_day = first_data_day
         self.output_measurement = output_measurement
         self.output_entity_id = output_entity_id
+        self.last_complete_date: Optional[date] = None
         
     def process(self) -> None:
         """Process entities according to the strategy.
@@ -329,7 +337,7 @@ class HomeAssistantProcessor:
             )
         )
 
-    def process_data(self) -> int:
+    def process_data(self) -> ProcessingResult:
         """Run all configured processors in order.
 
         Args:
@@ -351,4 +359,12 @@ class HomeAssistantProcessor:
                 raise RuntimeError(f"Processing failed in {processor.__class__.__name__}") from e
         
         logger.info("Data processing completed.")
-        return processed_days
+        complete_dates = [
+            getattr(processor, "last_complete_date", None)
+            for processor in self.processors
+            if getattr(processor, "last_complete_date", None) is not None
+        ]
+        return ProcessingResult(
+            processed_days=processed_days,
+            last_complete_date=min(complete_dates) if complete_dates else None,
+        )
