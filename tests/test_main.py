@@ -66,7 +66,7 @@ def test_main_reports_keyboard_interrupt(monkeypatch):
     exit_code = main_module.main()
 
     assert exit_code == 130
-    assert summaries[0]["status"] == "FAILED"
+    assert summaries[0]["status"] == "ERROR"
     assert summaries[0]["error_type"] == "KeyboardInterrupt"
     assert summaries[0]["error_message"] == "Lauf manuell abgebrochen"
 
@@ -84,6 +84,6 @@ def test_main_reports_connection_failure(monkeypatch):
     monkeypatch.setattr(main_module, "write_run_summary", lambda **kwargs: summaries.append(kwargs))
 
     assert main_module.main() == 1
-    assert summaries[0]["status"] == "FAILED"
+    assert summaries[0]["status"] == "ERROR"
     assert summaries[0]["step"] == "InfluxDB connection"
     assert summaries[0]["error_type"] == "RuntimeError"

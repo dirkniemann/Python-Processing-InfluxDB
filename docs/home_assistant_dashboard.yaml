@@ -11,17 +11,13 @@ views:
             heading: Aktueller Lauf
             icon: mdi:play-circle-outline
           - type: tile
-            entity: binary_sensor.python_processing_prod_processing_running
-            name: Lauf aktiv
-            icon: mdi:run
-          - type: tile
             entity: sensor.python_processing_prod_processing_last_run_status
-            name: Letzter Laufstatus
+            name: Ergebnis letzter Lauf
             icon: mdi:check-decagram
           - type: tile
-            entity: binary_sensor.python_processing_prod_processing_failure_latched
-            name: Fehler gespeichert
-            icon: mdi:alert-circle
+            entity: sensor.python_processing_prod_processing_run_state
+            name: Laufzustand
+            icon: mdi:run
 
       - type: grid
         cards:
@@ -52,19 +48,15 @@ views:
             show_names: true
             entities:
               - entity: sensor.python_processing_prod_processing_last_run_status
-                name: Status
-              - entity: binary_sensor.python_processing_prod_processing_running
-                name: Aktiv
-              - entity: binary_sensor.python_processing_prod_processing_failure_latched
-                name: Fehler gespeichert
+                name: Ergebnis
+              - entity: sensor.python_processing_prod_processing_run_state
+                name: Laufzustand
 
       - type: grid
         cards:
           - type: heading
-            heading: Diagnose
-            icon: mdi:clipboard-pulse-outline
+            heading: Diagnose letzter Lauf
+            icon: mdi:alert-decagram-outline
           - type: markdown
             content: >-
-              Die Detailinformationen des letzten Laufs stehen als Attribute am
-              Sensor "Letzter Laufstatus" zur Verfügung: Warnungsanzahl,
-              betroffene Komponenten, Laufzeit und verarbeitete Tage.
+              {{ states('sensor.python_processing_prod_processing_last_run_diagnostic') }}
