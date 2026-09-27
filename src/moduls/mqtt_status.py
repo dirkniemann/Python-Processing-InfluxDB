@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -133,12 +134,12 @@ class MQTTStatusPublisher:
     """Publishes compact retained run status; MQTT failures never escape publish calls."""
 
     ENTITY_DEFINITIONS = (
-        ("sensor", "processing_last_run_status", "Last run status", None),
-        ("binary_sensor", "processing_running", "Processing running", "running"),
-        ("binary_sensor", "processing_failure_latched", "Processing failure latched", "problem"),
-        ("sensor", "processing_last_success", "Last successful processing run", "timestamp"),
-        ("sensor", "processing_last_runtime", "Last processing runtime", "duration"),
-        ("sensor", "processing_last_processed_date", "Last processed date", None),
+        ("sensor", "processing_last_run_status", "Python-Auswertung: Letzter Laufstatus", None),
+        ("binary_sensor", "processing_running", "Python-Auswertung: Lauf aktiv", "running"),
+        ("binary_sensor", "processing_failure_latched", "Python-Auswertung: Fehler gespeichert", "problem"),
+        ("sensor", "processing_last_success", "Python-Auswertung: Letzter Erfolg", "timestamp"),
+        ("sensor", "processing_last_runtime", "Python-Auswertung: Letzte Laufzeit", "duration"),
+        ("sensor", "processing_last_processed_date", "Python-Auswertung: Letzter Verarbeitungstag", None),
     )
 
     def __init__(self, config: MQTTConfig, stage: str, client_factory: Optional[Callable[..., Any]] = None):
@@ -168,6 +169,14 @@ class MQTTStatusPublisher:
         for attempt in range(self.config.retries + 1):
             try:
                 self.client = factory(client_id=self.config.client_id, protocol=mqtt.MQTTv311 if mqtt else None)
+                connected_event = threading.Event()
+                connection_result = {"accepted": False}
+
+                def on_connect(_client, _userdata, _flags, reason_code, _properties=None):
+                    connection_result["accepted"] = reason_code == 0
+                    connected_event.set()
+
+                self.client.on_connect = on_connect
                 if self.config.username:
                     self.client.username_pw_set(self.config.username, self.config.password)
                 if self.config.tls:
@@ -177,18 +186,40 @@ class MQTTStatusPublisher:
                 loop_start = getattr(self.client, "loop_start", None)
                 if loop_start:
                     loop_start()
+                if self.client_factory is None:
+                    if not connected_event.wait(self.config.connect_timeout_seconds):
+                        raise TimeoutError("MQTT broker did not acknowledge the connection in time")
+                    if not connection_result["accepted"]:
+                        raise ConnectionError("MQTT broker rejected the connection")
+                elif connected_event.is_set() and not connection_result["accepted"]:
+                    raise ConnectionError("MQTT broker rejected the connection")
                 self.connected = True
                 self.publish(self.availability_topic, "online", retain=True)
                 self.publish_discovery()
                 return True
             except Exception as exc:
                 logger.warning("MQTT connection attempt %d/%d failed: %s", attempt + 1, self.config.retries + 1, sanitize_text(exc))
+                failed_client = self.client
+                if failed_client is not None:
+                    try:
+                        loop_stop = getattr(failed_client, "loop_stop", None)
+                        if loop_stop:
+                            loop_stop()
+                        disconnect = getattr(failed_client, "disconnect", None)
+                        if disconnect:
+                            disconnect()
+                    except Exception:
+                        pass
                 self.connected = False
                 self.client = None
         return False
 
     def publish(self, topic: str, payload: Any, *, retain: bool = True) -> bool:
         if not self.connected or self.client is None:
+            return False
+        is_connected = getattr(self.client, "is_connected", None)
+        if is_connected is not None and not is_connected():
+            self.connected = False
             return False
         try:
             value = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
@@ -204,7 +235,7 @@ class MQTTStatusPublisher:
     def publish_discovery(self) -> None:
         device = {
             "identifiers": [f"python-processing-{self.stage}"],
-            "name": f"Python Processing {self.stage}",
+            "name": "Python Processing",
             "manufacturer": "Python Processing",
         }
         for component, object_id, name, device_class in self.ENTITY_DEFINITIONS:
@@ -212,6 +243,7 @@ class MQTTStatusPublisher:
             payload: Dict[str, Any] = {
                 "name": name,
                 "unique_id": f"python_processing_{self.stage}_{object_id}",
+                "default_entity_id": f"{component}.python_processing_{self.stage}_{object_id}",
                 "state_topic": state_topic,
                 "availability_topic": self.availability_topic,
                 "payload_available": "online",
