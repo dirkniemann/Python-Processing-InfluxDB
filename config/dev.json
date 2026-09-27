@@ -77,7 +77,7 @@
                 }
             },
             "corrected_house_consumption": {
-                "version": "v1",
+                "version": "v2",
                 "output_measurement": "Hausverbrauch_korrigiert",
                 "output_entity_id": "Hausverbrauch_korrigiert",
                 "sources": {
