@@ -672,9 +672,9 @@ Die Implementierung verwendet `paho-mqtt` 2.x mit MQTT 3.1.1. MQTT ist in `prod`
 #### Bestehender Betrieb und Grenzen
 
 - Der Produktivbetrieb startet `src/main.py` derzeit einmal täglich um 04:00 Uhr über Cron. `flock` verhindert überlappende Läufe; das Python-Programm beendet sich nach einem Lauf. Es handelt sich somit aktuell nicht um einen dauerhaft laufenden Daemon.
-- Während der langen Pause zwischen zwei Cron-Läufen ist `offline` der erwartete Prozesszustand. Home Assistant darf diesen Zustand nicht allein als Ausfall interpretieren. Ein ausgebliebener Lauf wird über den Zeitabstand seit dem letzten erfolgreichen Lauf beziehungsweise seit dem erwarteten Laufzeitpunkt erkannt.
+- Zwischen den Cron-Läufen ist Python beendet, der retained Availability-Status bleibt aber `online`, damit Home Assistant die gespeicherten Ergebniswerte verfügbar hält. Ob ein Lauf ausgeblieben ist, wird am letzten Erfolgszeitpunkt beziehungsweise am erwarteten Cronfenster erkannt; `processing_run_state` zeigt regulär `IDLE`.
 - `main()` bietet einen zentralen Lebenszyklus für Start, Verarbeitung, Exceptions, InfluxDB-Disconnect und Laufabschluss. Unerwartete Exceptions führen bereits zu einem Fehlercode und einer Zusammenfassung in `runs.log`.
-- `HomeAssistantProcessor.process_data()` liefert aktuell eine Tagesanzahl, aber keinen verlässlichen letzten vollständig verarbeiteten Tag. Die Tagesanzahl ist das Maximum der Rückgabewerte einzelner Processor und keine globale Fortschrittsbestätigung.
+- `HomeAssistantProcessor.process_data()` liefert die verarbeitete Tagesanzahl und den letzten gemeinsamen vollständig abgeschlossenen Processing-Tag für den MQTT-Status.
 - Processor erzeugen `WARNING`- und `ERROR`-Logmeldungen. Der laufbezogene Warning-Collector ordnet Warnungen dem aktuellen Lauf zu und bestimmt damit den Status `SUCCESS_WITH_WARNINGS`.
 - Der Launcher kann bereits vor dem Start von Python scheitern, zum Beispiel bei `git pull`, Logrotate-Prüfung oder Start des virtuellen Environments. Ein MQTT-LWT des Python-Prozesses deckt Fehler vor dem Python-Start nicht ab. Der Zeitüberschreitungsalarm auf den erwarteten erfolgreichen Lauf bleibt deshalb erforderlich.
 
@@ -684,11 +684,11 @@ Home Assistant erhält einen Status für das Ergebnis des letzten Laufs und eine
 
 | Zustand | Bedeutung |
 | --- | --- |
-| `SUCCESS` | Lauf wurde ohne Warnungen und ohne fatalen Fehler abgeschlossen. |
-| `SUCCESS_WITH_WARNINGS` | Lauf wurde abgeschlossen, aber mindestens eine Python-Logging-Warnung ist aufgetreten. |
-| `ERROR` | Lauf endete mit einem fatalen Fehler. |
+| `Erfolgreich` | Internes Ergebnis `SUCCESS`: Lauf wurde ohne Warnungen und ohne fatalen Fehler abgeschlossen. |
+| `Erfolgreich mit Warnungen` | Internes Ergebnis `SUCCESS_WITH_WARNINGS`: Lauf wurde abgeschlossen, aber mindestens eine Python-Logging-Warnung ist aufgetreten. |
+| `Fehler` | Internes Ergebnis `ERROR`: Lauf endete mit einem fatalen Fehler oder wurde unerwartet abgebrochen. |
 
-`processing_last_run_status` bleibt zwischen Cron-Läufen durch MQTT Retain sichtbar. `processing_run_state` wechselt beim Start auf `RUNNING` und bei regulärem Abschluss auf `IDLE`. Ein neuer Lauf überschreibt den Ergebnisstatus erst bei seinem Abschluss. Ein neuer erfolgreicher Lauf oder ein erfolgreicher Lauf mit Warnungen ersetzt den vorherigen Zustand `ERROR`. Stirbt Python oder die MQTT-Verbindung unerwartet ab, veröffentlicht der Last Will `ERROR` auf dem Ergebnis-Topic; der Laufzustand bleibt dann auf `RUNNING` und zeigt den nicht regulär abgeschlossenen Lauf an.
+`processing_last_run_status` bleibt zwischen Cron-Läufen durch MQTT Retain sichtbar. Home Assistant erhält dafür deutsche Enum-Werte: `Erfolgreich`, `Erfolgreich mit Warnungen` und `Fehler`. `processing_run_state` zeigt `Läuft` oder `Leerlauf`. Ein neuer Lauf überschreibt den Ergebnisstatus erst bei seinem Abschluss. Ein neuer erfolgreicher Lauf oder ein erfolgreicher Lauf mit Warnungen ersetzt den vorherigen Zustand `Fehler`. Stirbt Python oder die MQTT-Verbindung unerwartet ab, veröffentlicht der Last Will `Fehler` auf dem Ergebnis-Topic; der Laufzustand bleibt dann auf `Läuft` und zeigt den nicht regulär abgeschlossenen Lauf an.
 
 #### Warnungen und Logging
 
@@ -701,22 +701,23 @@ Home Assistant erhält einen Status für das Ergebnis des letzten Laufs und eine
 
 | Entity | Zweck | Zustände / Einheit |
 | --- | --- | --- |
-| `sensor.python_processing_prod_processing_last_run_status` | Ergebnis des letzten abgeschlossenen Laufs. | `SUCCESS`, `SUCCESS_WITH_WARNINGS`, `ERROR` |
-| `sensor.python_processing_prod_processing_run_state` | Aktueller Laufzustand. | `RUNNING`, `IDLE` |
+| `sensor.python_processing_prod_processing_last_run_status` | Ergebnis des letzten abgeschlossenen Laufs. | `Erfolgreich`, `Erfolgreich mit Warnungen`, `Fehler` |
+| `sensor.python_processing_prod_processing_run_state` | Aktueller Laufzustand. | `Läuft`, `Leerlauf` |
 | `sensor.python_processing_prod_processing_last_success` | Zeitpunkt des letzten abgeschlossenen Laufs ohne fatalen Fehler; Erfolg mit Warnungen zählt als abgeschlossen. Bei `ERROR` bleibt der ältere Wert stehen. | UTC-Zeitstempel |
 | `sensor.python_processing_prod_processing_last_runtime` | Dauer des letzten Laufs. | Sekunden |
 | `sensor.python_processing_prod_processing_last_processed_date` | Letzter vollständig verarbeiteter lokaler Tag, wenn die Pipeline einen Wert liefert. | `YYYY-MM-DD` |
 | `sensor.python_processing_prod_processing_last_run_diagnostic` | Gekürzte Warnungsbeispiele oder Fehlerdetails des letzten Laufs. | Text |
 
-Ein zusätzlicher Sensor „Fehler gespeichert“ wird nicht angelegt. Das Ergebnis des letzten Laufs und der aktuelle Laufzustand bleiben getrennte, eindeutige Aussagen. Das Dashboard enthält die Übersicht samt Verlauf sowie eine Karte „Diagnose letzter Lauf“.
+Die beiden Statussensoren werden mit Home-Assistant-Enum-Discovery und passenden Zustandsoptionen angelegt. Das Dashboard färbt `Erfolgreich` grün, `Erfolgreich mit Warnungen` orange und `Fehler` rot. Auch `Läuft` wird grün dargestellt; `Leerlauf` erscheint neutral. Wenn noch kein Diagnosewert vorliegt, zeigt die Diagnosekarte einen verständlichen Hinweis statt `unknown`.
 
 #### MQTT Topics, Retain, LWT und Discovery
 
 - Alle sechs Entities werden vollständig über Home-Assistant-MQTT-Discovery eingerichtet; manuelle MQTT-Sensor-YAML-Einträge in Home Assistant sind nicht nötig.
 - Discovery Topics folgen dem Schema `homeassistant/<component>/<node>/<object_id>/config`. Jedes Objekt hat eine stabile, stage-spezifische `unique_id` und gemeinsame Device-Informationen für „Python Processing“.
 - Ein stage-spezifisches Topic-Präfix trennt mindestens `dev`, `test` und `prod`. Die Discovery-Konfigurationen und letzte bekannte Ergebniswerte werden retained veröffentlicht, damit sie nach einem Neustart von Home Assistant oder des Brokers wiederhergestellt werden.
-- Der MQTT-Client registriert einen retained Last Will mit Payload `ERROR` direkt auf dem Status-Topic. Ein unerwarteter Prozess- oder Verbindungsabbruch wird dadurch als fataler Fehler sichtbar. Bei regulärem Prozessende bleibt der zuletzt veröffentlichte Laufstatus unverändert.
-- Der Status-Sensor verwendet kein kurzlebiges Availability-Topic. Andernfalls wäre er zwischen den täglichen Cron-Läufen erwartungsgemäß `unavailable` und würde den retained letzten Laufstatus im Dashboard verdecken.
+- Der MQTT-Client registriert einen retained Last Will mit Payload `Fehler` direkt auf dem Status-Topic. Ein unerwarteter Prozess- oder Verbindungsabbruch wird dadurch als fataler Fehler sichtbar. Bei regulärem Prozessende bleibt der zuletzt veröffentlichte Laufstatus unverändert.
+- Alle Entities verwenden ein Availability-Topic. Python publiziert darauf beim Verbindungsaufbau retained `online`, aber bei einem regulären Cron-Ende kein `offline`. Damit bleiben die retained Entities in Home Assistant verfügbar, obwohl der Python-Prozess zwischen den Läufen nicht resident ist. Dieses Availability-Signal bedeutet, dass der Statuskanal eingerichtet ist; ob ein Cron-Lauf ausgeblieben ist, muss über Laufzeitpunkt beziehungsweise letzten Erfolg beurteilt werden.
+- `Ctrl+C` wird von `main()` als Laufabbruch behandelt: Der Laufstatus `Fehler` und die Abbruchdiagnose werden publiziert, der Laufzustand wechselt auf `Leerlauf`, und der MQTT-Client trennt sich regulär. Bei einem harten Prozessabbruch greift der Last Will; `processing_run_state` bleibt dann auf `Läuft` als Hinweis, dass der Lauf nicht regulär beendet wurde.
 - Retained Discovery-Konfigurationen müssen bei einer späteren Entfernung oder Umbenennung der Integration gezielt gelöscht werden können, damit keine verwaisten Home-Assistant-Entities zurückbleiben.
 
 #### Fehlerbehandlung, Konfiguration und Betriebssicherheit

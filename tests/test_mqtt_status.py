@@ -67,7 +67,7 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
     assert publisher.connect() is True
     assert fake.will == (
         "python-processing/prod/state/processing_last_run_status",
-        "ERROR",
+        "Fehler",
         1,
         True,
     )
@@ -85,7 +85,30 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
     assert "sensor.python_processing_prod_processing_last_runtime" in discovered_ids
     assert "sensor.python_processing_prod_processing_last_success" in discovered_ids
     assert "sensor.python_processing_prod_processing_last_processed_date" in discovered_ids
-    assert all("availability_topic" not in payload for payload in discovery_payloads)
+    assert all(
+        payload["availability_topic"] == "python-processing/prod/availability"
+        and payload["payload_available"] == "online"
+        and payload["payload_not_available"] == "offline"
+        for payload in discovery_payloads
+    )
+    status_discovery = next(
+        payload for payload in discovery_payloads
+        if payload["default_entity_id"] == "sensor.python_processing_prod_processing_last_run_status"
+    )
+    run_state_discovery = next(
+        payload for payload in discovery_payloads
+        if payload["default_entity_id"] == "sensor.python_processing_prod_processing_run_state"
+    )
+    assert status_discovery["device_class"] == "enum"
+    assert status_discovery["options"] == ["Erfolgreich", "Erfolgreich mit Warnungen", "Fehler"]
+    assert run_state_discovery["device_class"] == "enum"
+    assert run_state_discovery["options"] == ["Läuft", "Leerlauf"]
+    assert (
+        "python-processing/prod/availability",
+        "online",
+        1,
+        True,
+    ) in fake.published
     cleared_legacy = [
         (topic, payload)
         for topic, payload, *_ in fake.published
@@ -107,9 +130,9 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
     )
 
     payloads = [str(payload) for _, payload, *_ in fake.published]
-    assert "SUCCESS_WITH_WARNINGS" in payloads
-    assert "RUNNING" in payloads
-    assert "IDLE" in payloads
+    assert "Erfolgreich mit Warnungen" in payloads
+    assert "Läuft" in payloads
+    assert "Leerlauf" in payloads
     diagnostic_payloads = [
         payload
         for topic, payload, *_ in fake.published
@@ -122,7 +145,7 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
         for topic, payload, *_ in fake.published
         if topic == publisher.status_topic
     ]
-    assert status_payloads == ["SUCCESS_WITH_WARNINGS"]
+    assert status_payloads == ["Erfolgreich mit Warnungen"]
     assert ("python-processing/prod/state/processing_last_runtime", "3.0", 1, True) in fake.published
     assert ("python-processing/prod/state/processing_last_processed_date", "2026-09-26", 1, True) in fake.published
     assert any(
@@ -132,6 +155,10 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
 
     publisher.disconnect()
     assert fake.connected is False
+    assert not any(
+        topic == "python-processing/prod/availability" and payload == "offline"
+        for topic, payload, *_ in fake.published
+    )
 
 
 def test_last_run_result_survives_restart_and_is_replaced_by_next_result(tmp_path):
@@ -164,7 +191,7 @@ def test_last_run_result_survives_restart_and_is_replaced_by_next_result(tmp_pat
         for topic, payload, *_ in fake.published
         if topic == restarted.status_topic
     ]
-    assert status_payloads == ["ERROR", "SUCCESS"]
+    assert status_payloads == ["Fehler", "Erfolgreich"]
     diagnostic_payloads = [
         payload
         for topic, payload, *_ in fake.published
@@ -181,9 +208,34 @@ def test_unexpected_disconnect_lwt_reports_failed_last_run(tmp_path):
     assert publisher.connect() is True
     topic, payload, qos, retain = fake.will
     assert topic == publisher.status_topic
-    assert payload == "ERROR"
+    assert payload == "Fehler"
     assert qos == 1
     assert retain is True
+
+
+def test_keyboard_interrupt_is_published_as_error_diagnostic(tmp_path):
+    fake = FakeClient()
+    publisher = MQTTStatusPublisher(make_config(tmp_path), "prod", client_factory=lambda **kwargs: fake)
+    assert publisher.connect() is True
+    started = datetime(2026, 9, 27, 4, tzinfo=timezone.utc)
+
+    publisher.publish_result(
+        status="ERROR",
+        started_at=started,
+        finished_at=datetime(2026, 9, 27, 4, 0, 1, tzinfo=timezone.utc),
+        days_processed=0,
+        last_processed_date=None,
+        error=KeyboardInterrupt(),
+        error_step="data processing",
+    )
+
+    assert (publisher.status_topic, "Fehler", 1, True) in fake.published
+    diagnostic = next(
+        payload
+        for topic, payload, *_ in fake.published
+        if topic.endswith("/processing_last_run_diagnostic")
+    )
+    assert diagnostic == "data processing: KeyboardInterrupt: Lauf manuell abgebrochen"
 
 
 def test_sanitize_text_is_single_line_and_bounded():
