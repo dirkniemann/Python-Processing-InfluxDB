@@ -14,7 +14,7 @@ from typing import List
 from dotenv import load_dotenv
 
 from moduls.logger_setup import RunWarningCollector, get_logger, write_run_summary
-from moduls.mqtt_status import MQTTConfig, MQTTStatusPublisher, RunDiagnostics
+from moduls.mqtt_status import MQTTConfig, MQTTStatusPublisher
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.processing.HomeAssistant_processing import HomeAssistantProcessor
 from moduls.szenarios.scenario_config import load_scenario_configuration
@@ -214,7 +214,7 @@ def main() -> int:
                     logger.error(f"Run failed during disconnect: {exc}", exc_info=True)
 
         finished_time = datetime.now(timezone.utc)
-        status = "FAILED" if error else (
+        status = "ERROR" if error else (
             "SUCCESS_WITH_WARNINGS"
             if warning_collector and warning_collector.warning_count
             else "SUCCESS"
@@ -244,12 +244,12 @@ def main() -> int:
             error = error or summary_error
             exit_code = exit_code or 1
 
+        status = "ERROR" if error else (
+            "SUCCESS_WITH_WARNINGS"
+            if warning_collector and warning_collector.warning_count
+            else "SUCCESS"
+        )
         if mqtt_publisher:
-            diagnostics = RunDiagnostics()
-            if warning_collector:
-                diagnostics.warning_count = warning_collector.warning_count
-                diagnostics.warning_components = set(warning_collector.warning_components)
-                diagnostics.warning_examples = list(warning_collector.warning_examples)
             try:
                 mqtt_publisher.publish_result(
                     status=status,
@@ -257,8 +257,11 @@ def main() -> int:
                     finished_at=finished_time,
                     days_processed=days_processed,
                     last_processed_date=last_processed_date,
-                    diagnostics=diagnostics,
+                    warning_count=warning_collector.warning_count if warning_collector else 0,
+                    warning_components=warning_collector.warning_components if warning_collector else (),
+                    warning_examples=warning_collector.warning_examples if warning_collector else (),
                     error=error,
+                    error_step=step if error else None,
                 )
                 mqtt_publisher.disconnect()
             except Exception as mqtt_error:

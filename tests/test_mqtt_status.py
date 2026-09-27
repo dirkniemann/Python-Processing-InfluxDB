@@ -1,7 +1,7 @@
 import json
 from datetime import date, datetime, timezone
 
-from moduls.mqtt_status import MQTTConfig, MQTTStatusPublisher, RunDiagnostics, sanitize_text
+from moduls.mqtt_status import MQTTConfig, MQTTStatusPublisher, sanitize_text
 
 
 class PublishResult:
@@ -55,7 +55,6 @@ def make_config(tmp_path):
     return MQTTConfig.from_mapping(
         {
             "enabled": True,
-            "state_file": str(tmp_path / "mqtt-status.json"),
         },
         "test",
     )
@@ -66,20 +65,34 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
     publisher = MQTTStatusPublisher(make_config(tmp_path), "prod", client_factory=lambda **kwargs: fake)
 
     assert publisher.connect() is True
-    assert fake.will == ("python-processing/prod/availability", "offline", 1, True)
-    discovery_topics = [topic for topic, *_ in fake.published if topic.endswith("/config")]
-    assert len(discovery_topics) == 6
-    assert all("python-processing-prod" in topic for topic in discovery_topics)
-    discovery_payloads = [json.loads(payload) for topic, payload, *_ in fake.published if topic.endswith("/config")]
-    assert "binary_sensor.python_processing_prod_processing_running" in {
-        payload["default_entity_id"]
-        for payload in discovery_payloads
-        if payload["unique_id"] == "python_processing_prod_processing_running"
-    }
-    assert any(payload["name"] == "Python-Auswertung: Lauf aktiv" for payload in discovery_payloads)
+    assert fake.will == (
+        "python-processing/prod/state/processing_last_run_status",
+        "ERROR",
+        1,
+        True,
+    )
+    discovery_records = [
+        (topic, payload)
+        for topic, payload, *_ in fake.published
+        if topic.endswith("/config") and payload
+    ]
+    assert len(discovery_records) == len(publisher.ENTITY_DEFINITIONS)
+    discovery_payloads = [json.loads(payload) for _, payload in discovery_records]
+    discovered_ids = {payload["default_entity_id"] for payload in discovery_payloads}
+    assert "sensor.python_processing_prod_processing_last_run_status" in discovered_ids
+    assert "sensor.python_processing_prod_processing_run_state" in discovered_ids
+    assert "sensor.python_processing_prod_processing_last_run_diagnostic" in discovered_ids
+    assert "sensor.python_processing_prod_processing_last_runtime" in discovered_ids
+    assert "sensor.python_processing_prod_processing_last_success" in discovered_ids
+    assert "sensor.python_processing_prod_processing_last_processed_date" in discovered_ids
+    assert all("availability_topic" not in payload for payload in discovery_payloads)
+    cleared_legacy = [
+        (topic, payload)
+        for topic, payload, *_ in fake.published
+        if topic.endswith("/config") and payload == ""
+    ]
+    assert len(cleared_legacy) == len(publisher.LEGACY_ENTITIES)
 
-    diagnostics = RunDiagnostics()
-    diagnostics.add_warning("processor", "token=secret\nsecond line")
     started = datetime(2026, 9, 27, 4, tzinfo=timezone.utc)
     publisher.publish_running(started)
     publisher.publish_result(
@@ -88,49 +101,89 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
         finished_at=datetime(2026, 9, 27, 4, 0, 3, tzinfo=timezone.utc),
         days_processed=2,
         last_processed_date=date(2026, 9, 26),
-        diagnostics=diagnostics,
+        warning_count=2,
+        warning_components=["processor"],
+        warning_examples=["Messreihe fehlt", "token=secret"],
     )
 
     payloads = [str(payload) for _, payload, *_ in fake.published]
     assert "SUCCESS_WITH_WARNINGS" in payloads
-    assert "ON" in payloads
-    assert "OFF" in payloads
+    assert "RUNNING" in payloads
+    assert "IDLE" in payloads
+    diagnostic_payloads = [
+        payload
+        for topic, payload, *_ in fake.published
+        if topic.endswith("/processing_last_run_diagnostic")
+    ]
+    assert "Messreihe fehlt" in diagnostic_payloads[-1]
     assert "secret" not in " ".join(payloads)
-    assert publisher.state["failure_latched"] is False
+    status_payloads = [
+        payload
+        for topic, payload, *_ in fake.published
+        if topic == publisher.status_topic
+    ]
+    assert status_payloads == ["SUCCESS_WITH_WARNINGS"]
+    assert ("python-processing/prod/state/processing_last_runtime", "3.0", 1, True) in fake.published
+    assert ("python-processing/prod/state/processing_last_processed_date", "2026-09-26", 1, True) in fake.published
+    assert any(
+        topic.endswith("/processing_last_success") and payload == "2026-09-27T04:00:03Z"
+        for topic, payload, *_ in fake.published
+    )
 
     publisher.disconnect()
-    assert fake.published[-1][0] == "python-processing/prod/availability"
-    assert fake.published[-1][1] == "offline"
+    assert fake.connected is False
 
 
-def test_failure_latch_survives_restart_and_clears_on_success(tmp_path):
+def test_last_run_result_survives_restart_and_is_replaced_by_next_result(tmp_path):
     config = make_config(tmp_path)
     fake = FakeClient()
     publisher = MQTTStatusPublisher(config, "prod", client_factory=lambda **kwargs: fake)
     publisher.connect()
+    started = datetime(2026, 9, 27, 4, tzinfo=timezone.utc)
     publisher.publish_result(
-        status="FAILED",
-        started_at=datetime(2026, 9, 27, 4, tzinfo=timezone.utc),
+        status="ERROR",
+        started_at=started,
         finished_at=datetime(2026, 9, 27, 4, 0, 1, tzinfo=timezone.utc),
         days_processed=0,
         last_processed_date=None,
-        diagnostics=RunDiagnostics(),
-        error=RuntimeError("password=hidden"),
+        error=RuntimeError("InfluxDB connection failed"),
+        error_step="InfluxDB connection",
     )
 
     restarted = MQTTStatusPublisher(config, "prod", client_factory=lambda **kwargs: fake)
-    assert restarted.state["failure_latched"] is True
-    assert "hidden" not in json.dumps(restarted.state)
-
+    assert restarted.connect() is True
     restarted.publish_result(
         status="SUCCESS",
-        started_at=datetime(2026, 9, 28, 4, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 9, 28, 4, 0, 1, tzinfo=timezone.utc),
+        started_at=started,
+        finished_at=datetime(2026, 9, 27, 4, 0, 2, tzinfo=timezone.utc),
         days_processed=0,
         last_processed_date=None,
-        diagnostics=RunDiagnostics(),
     )
-    assert restarted.state["failure_latched"] is False
+    status_payloads = [
+        payload
+        for topic, payload, *_ in fake.published
+        if topic == restarted.status_topic
+    ]
+    assert status_payloads == ["ERROR", "SUCCESS"]
+    diagnostic_payloads = [
+        payload
+        for topic, payload, *_ in fake.published
+        if topic.endswith("/processing_last_run_diagnostic")
+    ]
+    assert "InfluxDB connection failed" in diagnostic_payloads[0]
+    assert diagnostic_payloads[-1] == "Keine Warnungen oder Fehler im letzten Lauf."
+
+
+def test_unexpected_disconnect_lwt_reports_failed_last_run(tmp_path):
+    fake = FakeClient()
+    publisher = MQTTStatusPublisher(make_config(tmp_path), "prod", client_factory=lambda **kwargs: fake)
+
+    assert publisher.connect() is True
+    topic, payload, qos, retain = fake.will
+    assert topic == publisher.status_topic
+    assert payload == "ERROR"
+    assert qos == 1
+    assert retain is True
 
 
 def test_sanitize_text_is_single_line_and_bounded():

@@ -6,11 +6,9 @@ import json
 import logging
 import os
 import re
-import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 try:
@@ -20,13 +18,7 @@ except ImportError:  # MQTT is optional when disabled in the stage config.
 
 logger = logging.getLogger(__name__)
 
-MAX_TEXT_LENGTH = 240
-MAX_EXAMPLES = 5
 SAFE_TOPIC_PART = re.compile(r"[^A-Za-z0-9_.-]+")
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def iso_utc(value: datetime) -> str:
@@ -35,7 +27,7 @@ def iso_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def sanitize_text(value: Any, limit: int = MAX_TEXT_LENGTH) -> str:
+def sanitize_text(value: Any, limit: int = 240) -> str:
     text = str(value or "")
     text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
     text = re.sub(r"(?i)(token|password|passwd|secret|authorization)\s*[=:]\s*\S+", r"\1=[REDACTED]", text)
@@ -63,8 +55,6 @@ class MQTTConfig:
     connect_timeout_seconds: float = 5.0
     publish_timeout_seconds: float = 5.0
     retries: int = 2
-    heartbeat_interval_seconds: int = 60
-    state_file: str = "logs/mqtt_status.json"
 
     @classmethod
     def from_mapping(cls, values: Optional[Mapping[str, Any]], stage: str) -> "MQTTConfig":
@@ -84,8 +74,6 @@ class MQTTConfig:
             connect_timeout_seconds=float(raw.get("connect_timeout_seconds", 5)),
             publish_timeout_seconds=float(raw.get("publish_timeout_seconds", 5)),
             retries=int(raw.get("retries", 2)),
-            heartbeat_interval_seconds=int(raw.get("heartbeat_interval_seconds", 60)),
-            state_file=str(raw.get("state_file", f"logs/mqtt_status_{stage}.json")),
         )
         config.validate()
         return config
@@ -101,8 +89,8 @@ class MQTTConfig:
             raise ValueError("mqtt.qos must be between 0 and 2")
         if self.keepalive <= 0 or self.connect_timeout_seconds <= 0 or self.publish_timeout_seconds <= 0:
             raise ValueError("mqtt timeouts and keepalive must be positive")
-        if self.retries < 0 or self.heartbeat_interval_seconds <= 0:
-            raise ValueError("mqtt retries must be non-negative and heartbeat interval positive")
+        if self.retries < 0:
+            raise ValueError("mqtt retries must be non-negative")
         for label, value in (("client_id", self.client_id), ("topic_prefix", self.topic_prefix), ("discovery_prefix", self.discovery_prefix)):
             if not value.strip():
                 raise ValueError(f"mqtt.{label} must not be empty")
@@ -116,30 +104,22 @@ class MQTTConfig:
         return os.getenv(self.password_env) or None
 
 
-@dataclass
-class RunDiagnostics:
-    warning_count: int = 0
-    warning_components: set[str] = field(default_factory=set)
-    warning_examples: list[str] = field(default_factory=list)
-
-    def add_warning(self, component: str, message: str) -> None:
-        self.warning_count += 1
-        self.warning_components.add(sanitize_text(component, 80))
-        example = sanitize_text(message)
-        if example and example not in self.warning_examples and len(self.warning_examples) < MAX_EXAMPLES:
-            self.warning_examples.append(example)
-
-
 class MQTTStatusPublisher:
     """Publishes compact retained run status; MQTT failures never escape publish calls."""
 
     ENTITY_DEFINITIONS = (
-        ("sensor", "processing_last_run_status", "Python-Auswertung: Letzter Laufstatus", None),
-        ("binary_sensor", "processing_running", "Python-Auswertung: Lauf aktiv", "running"),
-        ("binary_sensor", "processing_failure_latched", "Python-Auswertung: Fehler gespeichert", "problem"),
-        ("sensor", "processing_last_success", "Python-Auswertung: Letzter Erfolg", "timestamp"),
-        ("sensor", "processing_last_runtime", "Python-Auswertung: Letzte Laufzeit", "duration"),
-        ("sensor", "processing_last_processed_date", "Python-Auswertung: Letzter Verarbeitungstag", None),
+        ("sensor", "processing_last_run_status", "Letzter Lauf", None),
+        ("sensor", "processing_run_state", "Laufzustand", None),
+        ("sensor", "processing_last_success", "Letzter erfolgreicher Lauf", "timestamp"),
+        ("sensor", "processing_last_runtime", "Laufzeit letzter Lauf", "duration"),
+        ("sensor", "processing_last_processed_date", "Letzter Verarbeitungstag", "date"),
+        ("sensor", "processing_last_run_diagnostic", "Diagnose letzter Lauf", None),
+    )
+    LEGACY_ENTITIES = (
+        ("binary_sensor", "processing_running"),
+        ("binary_sensor", "processing_failure_latched"),
+        ("sensor", "processing_running"),
+        ("sensor", "processing_last_error"),
     )
 
     def __init__(self, config: MQTTConfig, stage: str, client_factory: Optional[Callable[..., Any]] = None):
@@ -149,15 +129,17 @@ class MQTTStatusPublisher:
         self.client_factory = client_factory
         self.client: Any = None
         self.connected = False
-        self.state = self._load_state()
-
-    @property
-    def availability_topic(self) -> str:
-        return f"{self.config.topic_prefix}/{self.stage}/availability"
 
     @property
     def state_topic(self) -> str:
         return f"{self.config.topic_prefix}/{self.stage}/state"
+
+    @property
+    def status_topic(self) -> str:
+        return f"{self.state_topic}/processing_last_run_status"
+
+    def entity_topic(self, object_id: str) -> str:
+        return f"{self.state_topic}/{object_id}"
 
     def connect(self) -> bool:
         if not self.config.enabled:
@@ -181,7 +163,10 @@ class MQTTStatusPublisher:
                     self.client.username_pw_set(self.config.username, self.config.password)
                 if self.config.tls:
                     self.client.tls_set()
-                self.client.will_set(self.availability_topic, payload="offline", qos=self.config.qos, retain=True)
+                # If the process dies unexpectedly, Home Assistant should show
+                # the last run as failed. A clean disconnect does not publish
+                # the Will, so the retained result remains unchanged.
+                self.client.will_set(self.status_topic, payload="ERROR", qos=self.config.qos, retain=True)
                 self.client.connect(self.config.host, self.config.port, self.config.keepalive)
                 loop_start = getattr(self.client, "loop_start", None)
                 if loop_start:
@@ -194,7 +179,6 @@ class MQTTStatusPublisher:
                 elif connected_event.is_set() and not connection_result["accepted"]:
                     raise ConnectionError("MQTT broker rejected the connection")
                 self.connected = True
-                self.publish(self.availability_topic, "online", retain=True)
                 self.publish_discovery()
                 return True
             except Exception as exc:
@@ -233,40 +217,38 @@ class MQTTStatusPublisher:
             return False
 
     def publish_discovery(self) -> None:
-        device = {
-            "identifiers": [f"python-processing-{self.stage}"],
-            "name": "Python Processing",
-            "manufacturer": "Python Processing",
-        }
-        for component, object_id, name, device_class in self.ENTITY_DEFINITIONS:
-            state_topic = f"{self.state_topic}/{object_id}"
-            payload: Dict[str, Any] = {
-                "name": name,
-                "unique_id": f"python_processing_{self.stage}_{object_id}",
-                "default_entity_id": f"{component}.python_processing_{self.stage}_{object_id}",
-                "state_topic": state_topic,
-                "availability_topic": self.availability_topic,
-                "payload_available": "online",
-                "payload_not_available": "offline",
-                "device": device,
-            }
-            if object_id == "processing_last_run_status":
-                payload["json_attributes_topic"] = f"{self.state_topic}/last_run_attributes"
-            if object_id == "processing_last_runtime":
-                payload["unit_of_measurement"] = "s"
-            if component == "binary_sensor":
-                payload.update({"payload_on": "ON", "payload_off": "OFF"})
-            if device_class:
-                payload["device_class"] = device_class
+        for component, object_id, _, _ in self.ENTITY_DEFINITIONS:
+            payload = self._discovery_payload(object_id)
             discovery_topic = f"{self.config.discovery_prefix}/{component}/{self.node}/{object_id}/config"
             self.publish(discovery_topic, payload, retain=True)
+        # Remove discovery records from the former multi-entity dashboard so
+        # Home Assistant does not keep showing duplicate or diagnostic rows.
+        for component, object_id in self.LEGACY_ENTITIES:
+            discovery_topic = f"{self.config.discovery_prefix}/{component}/{self.node}/{object_id}/config"
+            self.publish(discovery_topic, "", retain=True)
+
+    def _discovery_payload(self, object_id: str) -> Dict[str, Any]:
+        definition = next(item for item in self.ENTITY_DEFINITIONS if item[1] == object_id)
+        component, _, name, device_class = definition
+        payload: Dict[str, Any] = {
+            "name": name,
+            "unique_id": f"python_processing_{self.stage}_{object_id}",
+            "default_entity_id": f"{component}.python_processing_{self.stage}_{object_id}",
+            "state_topic": self.entity_topic(object_id),
+            "device": {
+                "identifiers": [f"python-processing-{self.stage}"],
+                "name": "Python Processing",
+                "manufacturer": "Python Processing",
+            },
+        }
+        if device_class:
+            payload["device_class"] = device_class
+        if object_id == "processing_last_runtime":
+            payload["unit_of_measurement"] = "s"
+        return payload
 
     def publish_running(self, started_at: datetime) -> None:
-        self.publish(f"{self.state_topic}/processing_running", "ON")
-        self.publish(f"{self.state_topic}/run_state", {"run_state": "RUNNING", "started_at": iso_utc(started_at)})
-
-    def publish_heartbeat(self, timestamp: Optional[datetime] = None) -> None:
-        self.publish(f"{self.state_topic}/heartbeat", iso_utc(timestamp or utc_now()))
+        self.publish(self.entity_topic("processing_run_state"), "RUNNING")
 
     def publish_result(
         self,
@@ -276,48 +258,51 @@ class MQTTStatusPublisher:
         finished_at: datetime,
         days_processed: int,
         last_processed_date: Optional[date],
-        diagnostics: RunDiagnostics,
+        warning_count: int = 0,
+        warning_components: Optional[Iterable[str]] = None,
+        warning_examples: Optional[Iterable[str]] = None,
         error: Optional[BaseException] = None,
+        error_step: Optional[str] = None,
     ) -> None:
-        if status not in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "FAILED"}:
+        if status not in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "ERROR"}:
             raise ValueError(f"Unsupported MQTT run status: {status}")
-        duration = max(0, (finished_at - started_at).total_seconds())
-        failure = sanitize_text(error) if error else None
-        result = {
-            "status": status,
-            "started_at": iso_utc(started_at),
-            "finished_at": iso_utc(finished_at),
-            "runtime_seconds": duration,
-            "processed_days": int(days_processed),
-            "processed_date": last_processed_date.isoformat() if last_processed_date else None,
-            "warning_count": diagnostics.warning_count,
-            "warning_components": sorted(diagnostics.warning_components),
-            "warning_examples": diagnostics.warning_examples,
-        }
-        if failure:
-            result["error"] = failure
-        self.state["last_run"] = result
-        if status == "FAILED":
-            self.state["failure_latched"] = True
-            self.state["last_failure"] = {"timestamp": iso_utc(finished_at), "error": failure or "run failed"}
+        duration = max(0.0, (finished_at - started_at).total_seconds())
+        examples = [sanitize_text(item, 180) for item in (warning_examples or [])]
+        examples = [item for item in examples if item][:5]
+        components = sorted({sanitize_text(item, 80) for item in (warning_components or [])})
+        if status == "ERROR":
+            details = sanitize_text(error) if error else "Unbekannter Fehler"
+            diagnostic = f"{error_step}: " if error_step else ""
+            if error:
+                diagnostic += f"{type(error).__name__}: "
+            diagnostic += details
+        elif warning_count:
+            diagnostic = f"{warning_count} Warnung(en)"
+            if components:
+                diagnostic += f" in {', '.join(components[:3])}"
+            if examples:
+                diagnostic += ": " + " | ".join(examples)
+            if examples and warning_count > len(examples):
+                diagnostic += f" (und {warning_count - len(examples)} weitere)"
         else:
-            self.state["failure_latched"] = False
-            self.state["last_success"] = iso_utc(finished_at)
-        self._save_state()
-        self.publish(f"{self.state_topic}/processing_running", "OFF")
-        self.publish(f"{self.state_topic}/processing_failure_latched", "ON" if self.state["failure_latched"] else "OFF")
-        self.publish(f"{self.state_topic}/processing_last_run_status", status)
-        self.publish(f"{self.state_topic}/processing_last_success", self.state.get("last_success", ""))
-        self.publish(f"{self.state_topic}/processing_last_runtime", duration)
-        self.publish(f"{self.state_topic}/processing_last_processed_date", result["processed_date"] or "")
-        self.publish(f"{self.state_topic}/last_run_attributes", result)
-        self.publish(f"{self.state_topic}/run_state", {"run_state": "IDLE", "finished_at": result["finished_at"]})
+            diagnostic = "Keine Warnungen oder Fehler im letzten Lauf."
+
+        self.publish(self.status_topic, status)
+        self.publish(self.entity_topic("processing_run_state"), "IDLE")
+        self.publish(self.entity_topic("processing_last_runtime"), duration)
+        self.publish(self.entity_topic("processing_last_run_diagnostic"), diagnostic)
+        if status != "ERROR":
+            self.publish(self.entity_topic("processing_last_success"), iso_utc(finished_at))
+        if last_processed_date is not None:
+            self.publish(
+                self.entity_topic("processing_last_processed_date"),
+                last_processed_date.isoformat(),
+            )
 
     def disconnect(self) -> None:
         if not self.client:
             return
         try:
-            self.publish(self.availability_topic, "offline", retain=True)
             loop_stop = getattr(self.client, "loop_stop", None)
             if loop_stop:
                 loop_stop()
@@ -334,27 +319,6 @@ class MQTTStatusPublisher:
         for component, object_id, _, _ in self.ENTITY_DEFINITIONS:
             topic = f"{self.config.discovery_prefix}/{component}/{self.node}/{object_id}/config"
             self.publish(topic, "", retain=True)
-
-    def _load_state(self) -> Dict[str, Any]:
-        path = Path(self.config.state_file)
-        try:
-            with path.open(encoding="utf-8") as handle:
-                value = json.load(handle)
-            return value if isinstance(value, dict) else {}
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return {}
-
-    def _save_state(self) -> None:
-        path = Path(self.config.state_file)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self.state, handle, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, path)
-        finally:
-            if os.path.exists(temporary_name):
-                os.unlink(temporary_name)
+        for component, object_id in self.LEGACY_ENTITIES:
+            topic = f"{self.config.discovery_prefix}/{component}/{self.node}/{object_id}/config"
+            self.publish(topic, "", retain=True)
