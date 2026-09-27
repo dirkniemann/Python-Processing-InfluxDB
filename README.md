@@ -172,12 +172,14 @@ nano .env
 - **Logging**: root logger configured once; console + file handler, cleanup of old logs.
 
 ## Tests implemented
-- `tests/test_main.py`: fakes Influx handler/processor to ensure CLI wiring and exit code success.
-- `tests/test_influxdb_handler.py`: timezone conversion round-trip, connection using fakes, last datapoint retrieval, write path, UTC conversion in queries, and None handling when no data exists.
+- `tests/test_main.py`: fakes Influx handler/processor to verify successful runs, interrupts, and connection failures with correct summary steps.
+- `tests/test_influxdb_handler.py` and `tests/test_influxdb_handler_additional.py`: timezone conversion, connection and write paths, UTC query conversion, missing data, credentials, version selection, and sorted records.
 - `tests/test_logger_setup.py`: logger creation writes a file and cleans up old logs.
 - `tests/test_homeassistant_processing.py`: processor wiring from config, config validation, required output entity enforcement, and date-based day selection.
+- `tests/test_daily_aggregate_processor.py`: daily entity/total sums, missing source data, and pending-day processing.
+- `tests/test_fix_waermepumpe_stromverbrauch_processor.py`: monotonicity repairs, zero backfill, and a realistic missing-reset day.
+- `tests/test_waermepumpe_statistik_processor.py`: shared grid budget, counter resets, change-only compressor states, and complete daily PV/grid totals.
 - `tests/test_config_prod.py`: structural checks for `config/prod.json` (processing buckets, entities, scenarios base data).
-- `tests/test_intentional_failures.py`: marked xfail to illustrate failure reporting (kept for CI visibility).
 
 ## Roadmap / TODO
 - Publish MQTT status for each run and include logs on errors

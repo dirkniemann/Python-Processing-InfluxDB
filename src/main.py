@@ -167,11 +167,13 @@ def main() -> int:
     finally:
         if influx_handler:
             try:
-                step = "InfluxDB disconnect"
+                if error is None:
+                    step = "InfluxDB disconnect"
                 influx_handler.disconnect()
             except Exception as exc:
                 if error is None:
                     error = exc
+                    step = "InfluxDB disconnect"
                 if logger:
                     logger.error(f"Run failed during disconnect: {exc}", exc_info=True)
 

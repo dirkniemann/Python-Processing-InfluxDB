@@ -579,7 +579,7 @@ class InfluxDBHandler:
         match = re.search(r"(\d+)$", value)
         if match:
             return (0, int(match.group(1)), value)
-        return (1, 0, value)
+        return (-1, 0, value)
     
     def __enter__(self):
         """Open connection for use in ``with InfluxDBHandler() as handler`` blocks."""
