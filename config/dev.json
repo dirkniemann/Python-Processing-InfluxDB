@@ -59,39 +59,128 @@
                         "unit": "state"
                     }
                 }
+            },
+            "corrected_house_consumption": {
+                "version": "v1",
+                "output_measurement": "Hausverbrauch_korrigiert",
+                "output_entity_id": "Hausverbrauch_korrigiert",
+                "sources": {
+                    "fems_house_consumption": {
+                        "bucket": "HomeAssistant",
+                        "measurement": "W",
+                        "entity_id": "elektrischer_verbrauch",
+                        "field": "value",
+                        "change_only": true
+                    },
+                    "mt_stall_neu_power": {
+                        "bucket": "HomeAssistant",
+                        "measurement": "W",
+                        "entity_id": "mt_stall_neu_leistung_ac_fixed",
+                        "field": "value",
+                        "change_only": true
+                    }
+                }
             }
         }
     },
     "scenarios": {
+        "buckets": {
+            "source_bucket": "HomeAssistant",
+            "processing_bucket": "HomeAssistant_processed",
+            "output_bucket": "testing"
+        },
         "setup": {
-            "bucket": "testing",
-            "input_bucket": "HomeAssistant",
-            "base_storage_capacity_kWh": 22.4,
-            "base_charging_power_kW": 17.92
+            "base_capacity_kwh": 22.4,
+            "base_charge_power_dc_kw": 17.92,
+            "base_discharge_power_dc_kw": 17.92,
+            "min_soc_pct": 5,
+            "max_soc_pct": 100,
+            "initial_soc_pct": 5,
+            "loss_model": "idealized_no_additional_losses_v1"
         },
-        "8_modules_2_towers": {
-            "name": "8_modules_2_towers",
-            "measurement": "scenario",
-            "version": "v1",
-            "description": "Scenario with 8 additional modules in 2 towers",
-            "extra_storage_capacity_kWh": 22.4,
-            "extra_charging_power_kW": 0.0
+        "sources": {
+            "corrected_house_load": {
+                "bucket_ref": "processing_bucket",
+                "measurement": "Hausverbrauch_korrigiert",
+                "entity_id": "Hausverbrauch_korrigiert",
+                "field": "value",
+                "version": "v1",
+                "change_only": true
+            },
+            "fems_pv": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "fems_productiondcactualpower",
+                "field": "value",
+                "change_only": true
+            },
+            "mt_stall_neu": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "mt_stall_neu_leistung_ac_fixed",
+                "field": "value",
+                "change_only": true
+            },
+            "mt_stall_alt_1": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "mt_stall_alt_1_leistung_ac_fixed",
+                "field": "value",
+                "change_only": true
+            },
+            "mt_stall_alt_2": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "mt_stall_alt_2_leistung_ac_fixed",
+                "field": "value",
+                "change_only": true
+            }
         },
-        "7_modules_1_tower": {
-            "name": "7_modules_1_tower",
-            "measurement": "scenario",
-            "version": "v1",
-            "description": "Scenario with 7 additional modules in 1 tower",
-            "extra_storage_capacity_kWh": 19.6,
-            "extra_charging_power_kW": 12.08
+        "pv_sources": {
+            "local_pv": ["fems_pv", "mt_stall_neu"],
+            "old_pv": ["mt_stall_alt_1", "mt_stall_alt_2"]
         },
-        "14_modules_2_towers": {
-            "name": "14_modules_2_towers",
-            "measurement": "scenario",
-            "version": "v1",
-            "description": "Scenario with 14 additional modules in 2 towers",
-            "extra_storage_capacity_kWh": 39.2,
-            "extra_charging_power_kW": 6.72
+        "pv_modes": {
+            "without_old_pv": ["local_pv"],
+            "with_old_pv": ["local_pv", "old_pv"]
+        },
+        "validation": {
+            "battery_power": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "fems_essdischargepower",
+                "field": "value",
+                "change_only": true
+            },
+            "battery_soc": {
+                "bucket_ref": "source_bucket",
+                "measurement": "%",
+                "entity_id": "fems_esssoc",
+                "field": "value",
+                "change_only": true
+            }
+        },
+        "definitions": {
+            "current_battery": {
+                "enabled": true,
+                "extra_capacity_kwh": 0,
+                "extra_power_kw": 0
+            },
+            "8_modules_2_towers": {
+                "enabled": true,
+                "extra_capacity_kwh": 22.4,
+                "extra_power_kw": 0
+            },
+            "7_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 19.6,
+                "extra_power_kw": 12.08
+            },
+            "14_modules_2_towers": {
+                "enabled": true,
+                "extra_capacity_kwh": 39.2,
+                "extra_power_kw": 6.72
+            }
         }
     }
 }
