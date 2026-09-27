@@ -283,6 +283,16 @@ class WaermepumpeStatistikProcessor(EntityProcessor):
                     measurement="fix_waermepumpe_stromverbrauch",
                 )
             )
+            if not pump_records[pump_role]:
+                raise RuntimeError(
+                    "No source counter data found for heat pump statistics: "
+                    f"day={day.isoformat()}, bucket={self.output_bucket!r}, "
+                    "measurement='fix_waermepumpe_stromverbrauch', "
+                    f"entity_id={counter['entity_id']!r}, "
+                    f"field={counter['field']!r}, "
+                    f"source_version={source_version!r}. "
+                    "Check the configured Waermepumpe_statistik.source_version."
+                )
             compressor = self._sensor(compressor_role)
             activity_events[compressor_role] = self._sorted_records(
                 self.influx_handler.get_data(
