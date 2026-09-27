@@ -6,6 +6,7 @@ from moduls.influxdb_handler import LOCAL_TZ
 from moduls.processing.daily_aggregate_processor import DailyAggregateProcessor
 from moduls.processing.waermepumpe_statistik_processor import WaermepumpeStatistikProcessor
 from moduls.processing.fix_waermepumpe_stromverbrauch_processor import FixWaermepumpeStromverbrauchProcessor
+from moduls.processing.corrected_house_consumption_processor import CorrectedHouseConsumptionProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,11 @@ class HomeAssistantProcessor:
         
         if "Waermepumpe_statistik" in entities_to_process:
             self._init_waermepumpe_statistik_processor(entities_to_process["Waermepumpe_statistik"])
+
+        if "corrected_house_consumption" in entities_to_process:
+            self._init_corrected_house_consumption_processor(
+                entities_to_process["corrected_house_consumption"]
+            )
 
         logger.debug(
             f"HomeAssistant processor initialized - Input: {self.input_bucket}, "
@@ -279,6 +285,49 @@ class HomeAssistantProcessor:
         )
         self.processors.append(processor)
         logger.debug(f"Initialized WaermepumpeStatistikProcessor with roles {sorted(sensors)} (version: {version})")
+
+    def _init_corrected_house_consumption_processor(self, config: Dict[str, Any]) -> None:
+        """Initialize the configured corrected house-consumption processor."""
+        if not isinstance(config, dict):
+            raise ValueError("'corrected_house_consumption' config must be a dictionary")
+        version = config.get("version")
+        output_measurement = config.get("output_measurement")
+        output_entity_id = config.get("output_entity_id")
+        sources = config.get("sources")
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("'corrected_house_consumption.version' must be a non-empty string")
+        if not isinstance(output_measurement, str) or not output_measurement.strip():
+            raise ValueError("'corrected_house_consumption.output_measurement' must be a non-empty string")
+        if not isinstance(output_entity_id, str) or not output_entity_id.strip():
+            raise ValueError("'corrected_house_consumption.output_entity_id' must be a non-empty string")
+        if not isinstance(sources, dict) or set(sources) != {
+            "fems_house_consumption",
+            "mt_stall_neu_power",
+        }:
+            raise ValueError(
+                "'corrected_house_consumption.sources' must define exactly the two correction sources"
+            )
+        for role, source in sources.items():
+            if not isinstance(source, dict):
+                raise ValueError(f"'corrected_house_consumption.sources.{role}' must be a dictionary")
+            for key in ("bucket", "measurement", "entity_id", "field"):
+                if not isinstance(source.get(key), str) or not source[key].strip():
+                    raise ValueError(
+                        f"'corrected_house_consumption.sources.{role}.{key}' must be a non-empty string"
+                    )
+
+        self.processors.append(
+            CorrectedHouseConsumptionProcessor(
+                influx_handler=self.influx_handler,
+                input_bucket=self.input_bucket,
+                output_bucket=self.output_bucket,
+                version=version,
+                sources=sources,
+                first_data_day=self.first_data_day,
+                output_measurement=output_measurement,
+                output_entity_id=output_entity_id,
+            )
+        )
 
     def process_data(self) -> int:
         """Run all configured processors in order.

@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from moduls.logger_setup import get_logger, write_run_summary
 from moduls.influxdb_handler import InfluxDBHandler
 from moduls.processing.HomeAssistant_processing import HomeAssistantProcessor
+from moduls.szenarios.scenario_config import load_scenario_configuration
+from moduls.szenarios.scenarios_processor import BatteryScenarioRunner
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -149,6 +151,18 @@ def main() -> int:
 
         step = "data processing"
         days_processed = ha_processor.process_data()
+
+        if "scenarios" in config:
+            step = "battery scenario simulation"
+            scenario_config = load_scenario_configuration(config)
+            scenario_runner = BatteryScenarioRunner(
+                influx_handler=influx_handler,
+                scenario_config=scenario_config,
+                first_data_day=first_data_day,
+            )
+            scenario_days = scenario_runner.process()
+            scenario_runner.validate_real_battery()
+            days_processed = max(days_processed, scenario_days)
         step = "completed"
     except KeyboardInterrupt as exc:
         error = exc
@@ -167,11 +181,13 @@ def main() -> int:
     finally:
         if influx_handler:
             try:
-                step = "InfluxDB disconnect"
+                if error is None:
+                    step = "InfluxDB disconnect"
                 influx_handler.disconnect()
             except Exception as exc:
                 if error is None:
                     error = exc
+                    step = "InfluxDB disconnect"
                 if logger:
                     logger.error(f"Run failed during disconnect: {exc}", exc_info=True)
 

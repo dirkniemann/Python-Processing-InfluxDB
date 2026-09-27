@@ -28,6 +28,7 @@ def test_homeassistant_processor_creates_processors(monkeypatch, prod_config, fa
     monkeypatch.setattr(processing_module, "FixWaermepumpeStromverbrauchProcessor", make_stub("fix"))
     monkeypatch.setattr(processing_module, "DailyAggregateProcessor", make_stub("daily"))
     monkeypatch.setattr(processing_module, "WaermepumpeStatistikProcessor", make_stub("stat"))
+    monkeypatch.setattr(processing_module, "CorrectedHouseConsumptionProcessor", make_stub("corrected"))
 
     handler = object()
     first_day = datetime(2024, 1, 1).date()
@@ -37,13 +38,14 @@ def test_homeassistant_processor_creates_processors(monkeypatch, prod_config, fa
         first_data_day=first_day,
     )
 
-    assert len(processor.processors) == 3
+    assert len(processor.processors) == 4
     processor.process_data()
     assert all(instance.process_called for instance in created)
 
     fix_stub = next(p for p in created if p.name == "fix")
     daily_stub = next(p for p in created if p.name == "daily")
     stat_stub = next(p for p in created if p.name == "stat")
+    corrected_stub = next(p for p in created if p.name == "corrected")
 
     assert fix_stub.kwargs["output_measurement"] == prod_config["processing"]["entities_to_process"]["fix_waermepumpe_stromverbrauch"]["output_measurement"]
     assert daily_stub.kwargs["output_entity_id"] == prod_config["processing"]["entities_to_process"]["daily_aggregate"]["output_entity_id"]
@@ -54,6 +56,10 @@ def test_homeassistant_processor_creates_processors(monkeypatch, prod_config, fa
         "grid_power",
         "compressor_1",
         "compressor_2",
+    }
+    assert set(corrected_stub.kwargs["sources"]) == {
+        "fems_house_consumption",
+        "mt_stall_neu_power",
     }
 
 

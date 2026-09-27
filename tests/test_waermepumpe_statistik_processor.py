@@ -100,3 +100,75 @@ def test_count_start_events_counts_transitions_not_measurement_intervals(process
     )
 
     assert starts == 2
+
+
+def test_process_day_writes_pv_grid_and_daily_totals(processor_module):
+    day = datetime(2026, 9, 20).date()
+    day_start = datetime(2026, 9, 19, 22, tzinfo=timezone.utc)
+    hour = timedelta(hours=1)
+    roles = {
+        "heat_pump_1_counter": {"entity_id": "pump1", "field": "value"},
+        "heat_pump_2_counter": {"entity_id": "pump2", "field": "value"},
+        "grid_power": {"entity_id": "grid", "field": "value", "measurement": "W"},
+        "compressor_1": {"entity_id": "comp1", "field": "value", "measurement": "state"},
+        "compressor_2": {"entity_id": "comp2", "field": "value", "measurement": "state"},
+    }
+    data = {
+        "pump1": [
+            {"time": day_start, "value": 0.0},
+            {"time": day_start + hour, "value": 0.1},
+            {"time": day_start + 2 * hour, "value": 10.4},
+        ],
+        "pump2": [
+            {"time": day_start, "value": 0.0},
+            {"time": day_start + hour, "value": 0.1},
+            {"time": day_start + 2 * hour, "value": 12.8},
+        ],
+        "grid": [{"time": day_start, "value": 5500.0}],
+        "comp1": [
+            {"time": day_start, "value": 0},
+            {"time": day_start + hour, "value": 1},
+            {"time": day_start + 2 * hour, "value": 0},
+        ],
+        "comp2": [{"time": day_start, "value": 0}],
+    }
+
+    class Handler:
+        def __init__(self):
+            self.writes = []
+
+        def get_data(self, **kwargs):
+            return list(data[kwargs["entity_id"]])
+
+        def write_datapoint(self, **kwargs):
+            self.writes.append(kwargs)
+
+    processor = processor_module.WaermepumpeStatistikProcessor(
+        influx_handler=Handler(),
+        input_bucket="input",
+        output_bucket="output",
+        version="v2",
+        entities=[],
+        first_data_day=day,
+        output_measurement="stats",
+        output_entity_id="total",
+        sensor_roles=roles,
+        source_version="v1",
+        emit_daily_summary=True,
+    )
+
+    processor._process_day(day, "v1")
+
+    fields = [write["field"] for write in processor.influx_handler.writes]
+    assert "pv_contribution" in fields
+    assert "grid_import" in fields
+    assert fields.count("daily_pv") == 3
+    assert fields.count("daily_grid_import") == 3
+    daily_values = {
+        write["entity_id"]: write["value"]
+        for write in processor.influx_handler.writes
+        if write["field"] == "daily_pv"
+    }
+    assert daily_values["total"] == pytest.approx(
+        daily_values["pump1"] + daily_values["pump2"]
+    )

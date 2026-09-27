@@ -324,6 +324,144 @@ class InfluxDBHandler:
             logger.error(f"Error querying data: {e}", exc_info=True)
             return None
 
+    def get_latest_datapoint_by_time(
+        self,
+        start_time: datetime,
+        bucket: str,
+        entity_id: str,
+        stop_time: Optional[datetime] = None,
+        field: str = "value",
+        measurement: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the chronologically latest point in a time range.
+
+        This method is deliberately separate from ``get_last_datapoint``.
+        The latter uses ``max()`` because daily counter processing needs the
+        numerically largest value; change-only signals need ``last()`` by time.
+        """
+        if not self.client:
+            logger.error("Cannot query data: Client not connected")
+            return None
+
+        try:
+            def _to_utc(dt: datetime) -> datetime:
+                if dt.tzinfo is None:
+                    return local_to_utc(dt)
+                return dt.astimezone(UTC_TZ)
+
+            if stop_time is None:
+                start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                actual_start = _to_utc(start_time)
+                actual_stop = _to_utc(start_time + timedelta(days=1))
+            else:
+                actual_start = _to_utc(start_time)
+                actual_stop = _to_utc(stop_time)
+
+            measurement_filter = (
+                f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")'
+                if measurement else ""
+            )
+            version_filter = (
+                f'|> filter(fn: (r) => r["version"] == "{version}")'
+                if version else ""
+            )
+            query = f'''
+            from(bucket: "{bucket}")
+                |> range(start: {actual_start.isoformat()}, stop: {actual_stop.isoformat()})
+                |> filter(fn: (r) => r["entity_id"] == "{entity_id}")
+                |> filter(fn: (r) => r["_field"] == "{field}")
+                {measurement_filter}
+                {version_filter}
+                |> sort(columns: ["_time"])
+                |> last()
+                |> limit(n: 1)
+            '''
+
+            tables = self.client.query_api().query(query, org=self.org)
+            for table in tables:
+                for record in table.records:
+                    return {
+                        "time": utc_to_local(record.get_time()),
+                        "value": record.get_value(),
+                    }
+            return None
+        except Exception as e:
+            logger.error(f"Error querying latest data point: {e}", exc_info=True)
+            raise RuntimeError(f"Error querying latest data point: {e}")
+
+    def get_scenario_daily_records(
+        self,
+        bucket: str,
+        scenario: str,
+        pv_mode: str,
+        measurement: str = "battery_scenario_daily",
+        run_version: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return pivoted daily scenario records for restart/rebuild decisions."""
+        if not self.client:
+            logger.error("Cannot query data: Client not connected")
+            return []
+
+        run_filter = (
+            f'|> filter(fn: (r) => r["run_version"] == "{run_version}")'
+            if run_version else ""
+        )
+        query = f'''
+        from(bucket: "{bucket}")
+            |> range(start: 0)
+            |> filter(fn: (r) => r["_measurement"] == "{measurement}")
+            |> filter(fn: (r) => r["scenario"] == "{scenario}")
+            |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
+            {run_filter}
+            |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+            |> sort(columns: ["_time"])
+        '''
+        try:
+            records: List[Dict[str, Any]] = []
+            for table in self.client.query_api().query(query, org=self.org):
+                for record in table.records:
+                    values = dict(getattr(record, "values", {}) or {})
+                    values["time"] = record.get_time()
+                    records.append(values)
+            records.sort(key=lambda item: item["time"])
+            return records
+        except Exception as e:
+            logger.error(f"Error querying scenario daily records: {e}", exc_info=True)
+            raise RuntimeError(f"Error querying scenario daily records: {e}")
+
+    def get_scenario_timeseries_records(
+        self,
+        bucket: str,
+        scenario: str,
+        pv_mode: str,
+        measurement: str = "battery_scenario_timeseries",
+    ) -> List[Dict[str, Any]]:
+        """Return pivoted simulation intervals for diagnostic comparison."""
+        query = f'''
+        from(bucket: "{bucket}")
+            |> range(start: 0)
+            |> filter(fn: (r) => r["_measurement"] == "{measurement}")
+            |> filter(fn: (r) => r["scenario"] == "{scenario}")
+            |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
+            |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+            |> sort(columns: ["_time"])
+        '''
+        if not self.client:
+            logger.error("Cannot query data: Client not connected")
+            return []
+        try:
+            records: List[Dict[str, Any]] = []
+            for table in self.client.query_api().query(query, org=self.org):
+                for record in table.records:
+                    values = dict(getattr(record, "values", {}) or {})
+                    values["time"] = record.get_time()
+                    records.append(values)
+            return sorted(records, key=lambda item: item["time"])
+        except Exception as e:
+            logger.error(f"Error querying scenario timeseries records: {e}", exc_info=True)
+            raise RuntimeError(f"Error querying scenario timeseries records: {e}")
+
     def get_first_data_day(
         self,
         bucket: str,
@@ -517,6 +655,44 @@ class InfluxDBHandler:
         except Exception as e:
             logger.error(f"Error writing data point: {e}", exc_info=True)
             raise RuntimeError(f"Error writing data point: {e}")
+
+    def write_fields_datapoint(
+        self,
+        bucket: str,
+        measurement: str,
+        fields: Dict[str, Any],
+        tags: Optional[Dict[str, str]] = None,
+        timestamp: Optional[datetime] = None,
+    ) -> bool:
+        """Write several fields at one timestamp with one shared tag set."""
+        if not self.client:
+            message = "Cannot write data: Client not connected"
+            logger.error(message)
+            raise RuntimeError(message)
+        if not measurement or not fields:
+            raise ValueError("measurement and fields must not be empty")
+
+        try:
+            write_timestamp = timestamp if timestamp is not None else datetime.now()
+            if write_timestamp.tzinfo is None:
+                write_timestamp = local_to_utc(write_timestamp)
+
+            normalized_fields = {
+                name: float(value) if isinstance(value, (int, float)) else value
+                for name, value in fields.items()
+            }
+            point = {
+                "measurement": measurement,
+                "tags": dict(tags or {}),
+                "fields": normalized_fields,
+                "time": write_timestamp.isoformat(),
+            }
+            write_api = self.client.write_api(write_options=SYNCHRONOUS)
+            write_api.write(bucket=bucket, org=self.org, record=point)
+            return True
+        except Exception as e:
+            logger.error(f"Error writing multi-field data point: {e}", exc_info=True)
+            raise RuntimeError(f"Error writing multi-field data point: {e}")
         
 
     def get_last_version(
@@ -579,7 +755,7 @@ class InfluxDBHandler:
         match = re.search(r"(\d+)$", value)
         if match:
             return (0, int(match.group(1)), value)
-        return (1, 0, value)
+        return (-1, 0, value)
     
     def __enter__(self):
         """Open connection for use in ``with InfluxDBHandler() as handler`` blocks."""
