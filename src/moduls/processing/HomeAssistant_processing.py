@@ -302,12 +302,21 @@ class HomeAssistantProcessor:
         output_measurement = config.get("output_measurement")
         output_entity_id = config.get("output_entity_id")
         sources = config.get("sources")
+        interval_seconds = config.get("interval_seconds", 300)
         if not isinstance(version, str) or not version.strip():
             raise ValueError("'corrected_house_consumption.version' must be a non-empty string")
         if not isinstance(output_measurement, str) or not output_measurement.strip():
             raise ValueError("'corrected_house_consumption.output_measurement' must be a non-empty string")
         if not isinstance(output_entity_id, str) or not output_entity_id.strip():
             raise ValueError("'corrected_house_consumption.output_entity_id' must be a non-empty string")
+        if (
+            isinstance(interval_seconds, bool)
+            or not isinstance(interval_seconds, int)
+            or interval_seconds <= 0
+        ):
+            raise ValueError(
+                "'corrected_house_consumption.interval_seconds' must be a positive integer"
+            )
         if not isinstance(sources, dict) or set(sources) != {
             "fems_house_consumption",
             "mt_stall_neu_power",
@@ -334,6 +343,7 @@ class HomeAssistantProcessor:
                 first_data_day=self.first_data_day,
                 output_measurement=output_measurement,
                 output_entity_id=output_entity_id,
+                interval_seconds=interval_seconds,
             )
         )
 

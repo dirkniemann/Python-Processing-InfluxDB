@@ -11,7 +11,7 @@ Dieses Repository verarbeitet Home-Assistant-Zeitreihen aus InfluxDB 2.x. Es ber
 | Wärmepumpen-Tageszähler | Fehlende bzw. verschobene Tagesresets korrigieren und Tageskurven monotonisieren | Measurement fix_waermepumpe_stromverbrauch |
 | Tagesaggregate | Bereinigte Zählerstände pro Tag und zusammengefasster Gesamtwert | Measurement Waermepumpe_statistik, Feld daily_sum |
 | Wärmepumpenstatistik | Pumpenenergie zeitlich aufteilen und ein gemeinsames positives Netzbudget höchstens einmal zuweisen | Measurement Waermepumpe_statistik; Intervall- und Tageswerte |
-| Korrigierter Hausverbrauch | FEMS-Hausverbrauch und MT-Stall-neu-Leistung ereigniszeitlich zusammenführen und addieren | Measurement Hausverbrauch_korrigiert |
+| Korrigierter Hausverbrauch | FEMS-Hausverbrauch und MT-Stall-neu-Leistung zeitgewichtet auf ein konfigurierbares Intervall mitteln und addieren | Measurement Hausverbrauch_korrigiert |
 | Batterieszenarien | Sample-and-hold-Eingänge, idealisiertes Speichermodell, Tagesfortschreibung und Wiederanlauf | battery_scenario_timeseries und battery_scenario_daily |
 | Laufstatus | Laufzeit, Ergebnis, Warnungen und Diagnose über MQTT Discovery | Retained Sensoren im Home-Assistant-Dashboard |
 
@@ -41,7 +41,7 @@ Der konfigurierte Rechenweg lautet:
 
     elektrischer_verbrauch + mt_stall_neu_leistung_ac_fixed
 
-Beide Quellen werden als Change-only-Leistungswerte behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; der Zustand vor Tagesbeginn wird geladen. Negative Summen werden protokolliert und auf null begrenzt. Der Quellwert elektrischer_verbrauch wird laut bisheriger Anlagenklärung nicht unverändert als Simulationslast verwendet.
+Beide Quellen werden als Change-only-Leistungswerte behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; der Zustand vor Tagesbeginn wird geladen. Die Leistung wird energieerhaltend zeitgewichtet in gemeinsame Intervalle gemittelt (dev/prod: 300 Sekunden, über `interval_seconds` konfigurierbar), danach addiert und bei negativer Intervallsumme auf null begrenzt. Ausgegeben wird der Mittelwert mit dem Zeitstempel des Intervallstarts. Die Korrektur läuft in Version v3; die Batterieszenarien lesen ebenfalls v3. Der Quellwert elektrischer_verbrauch wird laut bisheriger Anlagenklärung nicht unverändert als Simulationslast verwendet.
 
 ### Batteriesimulation
 

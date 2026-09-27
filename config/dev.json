@@ -77,7 +77,8 @@
                 }
             },
             "corrected_house_consumption": {
-                "version": "v2",
+                "version": "v3",
+                "interval_seconds": 300,
                 "output_measurement": "Hausverbrauch_korrigiert",
                 "output_entity_id": "Hausverbrauch_korrigiert",
                 "sources": {
@@ -120,7 +121,7 @@
                 "measurement": "Hausverbrauch_korrigiert",
                 "entity_id": "Hausverbrauch_korrigiert",
                 "field": "value",
-                "version": "v2",
+                "version": "v3",
                 "change_only": true
             },
             "fems_pv": {
