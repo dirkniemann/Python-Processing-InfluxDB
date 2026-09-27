@@ -27,6 +27,8 @@ class FakeClient:
         self.connection = (host, port, keepalive)
 
     def loop_start(self):
+        if hasattr(self, "on_connect"):
+            self.on_connect(self, None, {}, 0)
         return None
 
     def loop_stop(self):
@@ -38,6 +40,15 @@ class FakeClient:
 
     def disconnect(self):
         self.connected = False
+
+    def is_connected(self):
+        return self.connected
+
+
+class RejectingClient(FakeClient):
+    def loop_start(self):
+        if hasattr(self, "on_connect"):
+            self.on_connect(self, None, {}, 5)
 
 
 def make_config(tmp_path):
@@ -59,6 +70,13 @@ def test_mqtt_publishes_discovery_availability_and_run_status(tmp_path):
     discovery_topics = [topic for topic, *_ in fake.published if topic.endswith("/config")]
     assert len(discovery_topics) == 6
     assert all("python-processing-prod" in topic for topic in discovery_topics)
+    discovery_payloads = [json.loads(payload) for topic, payload, *_ in fake.published if topic.endswith("/config")]
+    assert "binary_sensor.python_processing_prod_processing_running" in {
+        payload["default_entity_id"]
+        for payload in discovery_payloads
+        if payload["unique_id"] == "python_processing_prod_processing_running"
+    }
+    assert any(payload["name"] == "Python-Auswertung: Lauf aktiv" for payload in discovery_payloads)
 
     diagnostics = RunDiagnostics()
     diagnostics.add_warning("processor", "token=secret\nsecond line")
@@ -120,3 +138,11 @@ def test_sanitize_text_is_single_line_and_bounded():
     assert "secret" not in value
     assert "\n" not in value
     assert len(value) == 240
+
+
+def test_rejected_connection_does_not_publish_status(tmp_path):
+    fake = RejectingClient()
+    publisher = MQTTStatusPublisher(make_config(tmp_path), "prod", client_factory=lambda **kwargs: fake)
+
+    assert publisher.connect() is False
+    assert fake.published == []
