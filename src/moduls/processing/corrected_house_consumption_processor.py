@@ -112,6 +112,14 @@ class CorrectedHouseConsumptionProcessor(EntityProcessor):
             missing = sorted(set(self.sources) - set(values))
             raise ValueError(f"Missing source state for corrected house consumption: {missing}")
         corrected_value = sum(float(values[role]) for role in self.sources)
+        if corrected_value < 0:
+            logger.warning(
+                "Corrected house consumption below zero at %s (raw sum: %.3f W); "
+                "clamping to 0 W",
+                timestamp,
+                corrected_value,
+            )
+            corrected_value = 0.0
         self.influx_handler.write_datapoint(
             bucket=self.output_bucket,
             entity_id=self.output_entity_id,
