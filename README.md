@@ -39,9 +39,9 @@ Die Konfiguration benennt Sensorrollen ausdrücklich. Die Quellen müssen in Inf
 
 Der konfigurierte Rechenweg lautet:
 
-    elektrischer_verbrauch + mt_stall_neu_leistung_ac_fixed
+    zeitgewichteter Mittelwert von elektrischer_verbrauch
 
-Beide Quellen werden als Change-only-Leistungswerte behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; ein Zustand vor Tagesbeginn wird geladen, falls vorhanden. Fehlt am ersten Datentag ein Quellzustand, werden unvollständige Anfangsintervalle ausgelassen, bis beide Quellen bekannt sind. Die Leistung wird energieerhaltend zeitgewichtet in gemeinsame Intervalle gemittelt (dev/prod: 300 Sekunden, über `interval_seconds` konfigurierbar), danach addiert und bei negativer Intervallsumme auf null begrenzt. Ausgegeben wird der Mittelwert mit dem Zeitstempel des Intervallstarts. Die Korrektur läuft in Version v3; die Batterieszenarien lesen ebenfalls v3. Der Quellwert elektrischer_verbrauch wird laut bisheriger Anlagenklärung nicht unverändert als Simulationslast verwendet.
+Der bereits mit MT-Stall-neu korrigierte Sensor wird als Change-only-Leistungswert behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; ein Zustand vor Tagesbeginn wird geladen, falls vorhanden. Die Leistung wird energieerhaltend zeitgewichtet auf gemeinsame Intervalle gemittelt (dev/prod: 300 Sekunden, über `interval_seconds` konfigurierbar). Negative Intervallmittelwerte werden auf null begrenzt. MT-Stall-neu wird nicht erneut zum Hausverbrauch addiert. Ausgegeben wird der Mittelwert mit dem Zeitstempel des Intervallstarts. Die Korrektur läuft in Version v4; die Batterieszenarien lesen ebenfalls v4.
 
 ### Batteriesimulation
 

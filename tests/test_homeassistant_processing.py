@@ -57,10 +57,7 @@ def test_homeassistant_processor_creates_processors(monkeypatch, prod_config, fa
         "compressor_1",
         "compressor_2",
     }
-    assert set(corrected_stub.kwargs["sources"]) == {
-        "fems_house_consumption",
-        "mt_stall_neu_power",
-    }
+    assert set(corrected_stub.kwargs["sources"]) == {"fems_house_consumption"}
 
 
 def test_homeassistant_processor_validates_config(monkeypatch, fake_influx_module):

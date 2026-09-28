@@ -1,5 +1,3 @@
-import hashlib
-import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
@@ -64,13 +62,13 @@ class ScenarioSource:
 
 @dataclass(frozen=True)
 class ScenarioConfiguration:
+    version: str
     setup: BatterySetup
     buckets: Dict[str, str]
     sources: Dict[str, ScenarioSource]
     pv_sources: Dict[str, List[str]]
     pv_modes: Dict[str, List[str]]
     definitions: Dict[str, ScenarioDefinitionWithSetup]
-    config_hash: str
     validation_sources: Dict[str, ScenarioSource]
 
 
@@ -79,6 +77,7 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
     if not isinstance(scenarios, dict):
         raise ValueError("'scenarios' must be a dictionary")
 
+    version = _require_string(scenarios, "version", "scenarios.version")
     buckets = _require_dict(scenarios, "buckets")
     for key in ("source_bucket", "processing_bucket", "output_bucket"):
         _require_string(buckets, key, f"scenarios.buckets.{key}")
@@ -179,17 +178,14 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         if set(validation_sources) != {"battery_power", "battery_soc"}:
             raise ValueError("scenarios.validation must define battery_power and battery_soc")
 
-    config_hash = hashlib.sha256(
-        json.dumps(scenarios, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:16]
     return ScenarioConfiguration(
+        version=version,
         setup=setup,
         buckets={key: value for key, value in buckets.items()},
         sources=sources,
         pv_sources=pv_sources,
         pv_modes=pv_modes,
         definitions=definitions,
-        config_hash=config_hash,
         validation_sources=validation_sources,
     )
 

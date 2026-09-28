@@ -47,6 +47,34 @@ def test_write_datapoint_writes_record(fake_influx_module):
     assert record["record"]["fields"]["f"] == 1.0
 
 
+def test_write_fields_datapoints_writes_bounded_batches(fake_influx_module):
+    handler_module = importlib.import_module("moduls.influxdb_handler")
+    importlib.reload(handler_module)
+    handler = handler_module.InfluxDBHandler()
+    handler.client = handler_module.InfluxDBClient()
+
+    count = handler.write_fields_datapoints(
+        bucket="scenario-output",
+        measurement="batterie_szenarien",
+        batch_size=2,
+        datapoints=[
+            {
+                "fields": {"soc_pct": 50 + index},
+                "tags": {"version": "v5", "entity_id": "soc_pct", "unit": "%"},
+                "timestamp": datetime(2026, 1, 1, 0, index),
+            }
+            for index in range(3)
+        ],
+    )
+
+    assert count == 3
+    writes = handler.client._write_api.records
+    assert [len(write["record"]) for write in writes] == [2, 1]
+    assert all(write["bucket"] == "scenario-output" for write in writes)
+    assert all(point["measurement"] == "batterie_szenarien" for write in writes for point in write["record"])
+    assert all(point["fields"]["soc_pct"] >= 50 for write in writes for point in write["record"])
+
+
 def test_get_data_converts_naive_to_utc(fake_influx_module):
     handler_module = importlib.import_module("moduls.influxdb_handler")
     importlib.reload(handler_module)
@@ -73,6 +101,94 @@ def test_get_data_converts_naive_to_utc(fake_influx_module):
 
     assert capturing_api.last_query is not None
     assert "+00:00" in capturing_api.last_query, "Expected UTC isoformat timestamps"
+
+
+def test_scenario_daily_records_merge_entity_fields_without_local_day(fake_influx_module):
+    handler_module = importlib.import_module("moduls.influxdb_handler")
+    importlib.reload(handler_module)
+    handler = handler_module.InfluxDBHandler()
+    handler.client = handler_module.InfluxDBClient()
+    timestamp = pytz.UTC.localize(datetime(2026, 1, 1, 22, 59, 59))
+
+    class Record:
+        def __init__(self, entity, field, value):
+            self.values = {"entity_id": entity, "_field": field}
+            self.value = value
+
+        def get_time(self):
+            return timestamp
+
+        def get_value(self):
+            return self.value
+
+    handler.client.query_api_obj.tables = [
+        type("Table", (), {"records": [
+            Record("grid_import", "daily_sum", 4.5),
+            Record("soc_pct", "start", 30.0),
+            Record("soc_pct", "end", 35.0),
+            Record("stored_energy", "end", 7.0),
+        ]})()
+    ]
+
+    records = handler.get_scenario_daily_records(
+        bucket="testing",
+        scenario="current_battery",
+        pv_mode="without_old_pv",
+        version="v5",
+    )
+
+    assert records == [
+        {
+            "time": timestamp,
+            "grid_import_kwh": 4.5,
+            "soc_start_pct": 30.0,
+            "soc_end_pct": 35.0,
+            "stored_energy_end_kwh": 7.0,
+        }
+    ]
+
+
+def test_scenario_timeseries_records_merge_actual_fields_by_timestamp(fake_influx_module):
+    handler_module = importlib.import_module("moduls.influxdb_handler")
+    importlib.reload(handler_module)
+    handler = handler_module.InfluxDBHandler()
+    handler.client = handler_module.InfluxDBClient()
+    timestamp = pytz.UTC.localize(datetime(2026, 1, 1, 12))
+
+    class Record:
+        def __init__(self, entity, value):
+            self.values = {"entity_id": entity, "_field": "actual"}
+            self.value = value
+
+        def get_time(self):
+            return timestamp
+
+        def get_value(self):
+            return self.value
+
+    handler.client.query_api_obj.tables = [
+        type("Table", (), {"records": [
+            Record("soc_pct", 50.0),
+            Record("pv_to_battery", 1.0),
+            Record("battery_to_load", 0.5),
+        ]})()
+    ]
+
+    records = handler.get_scenario_timeseries_records(
+        bucket="testing",
+        scenario="current_battery",
+        pv_mode="without_old_pv",
+        version="v5",
+    )
+
+    assert records == [
+        {
+            "time": timestamp,
+            "soc_pct": 50.0,
+            "battery_charge_dc_kw": 1.0,
+            "battery_discharge_dc_kw": 0.5,
+        }
+    ]
 
 
 def test_get_last_datapoint_returns_none_on_missing_data(fake_influx_module):

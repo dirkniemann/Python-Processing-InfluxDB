@@ -25,7 +25,6 @@ class IntervalResult:
     grid_import_kw: float
     grid_export_kw: float
     pv_export_kw: float
-    quality_valid: bool = True
 
 
 class BatteryScenarioEngine:

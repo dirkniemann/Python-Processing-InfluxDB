@@ -275,7 +275,15 @@ def main() -> int:
         return exit_code or 1
 
     if logger:
-        logger.info(f"Application completed successfully. Duration: {finished_time - start_time}")
+        if warning_collector and warning_collector.warning_count:
+            logger.warning(
+                "Application completed with %d warning(s). Review the warnings above. "
+                "Duration: %s",
+                warning_collector.warning_count,
+                finished_time - start_time,
+            )
+        else:
+            logger.info(f"Application completed successfully. Duration: {finished_time - start_time}")
     return 0
 
 

@@ -53,9 +53,9 @@ def test_simulation_comparison_reports_soc_power_and_energy_differences():
     module = importlib.import_module("moduls.szenarios.battery_validation")
     utc = pytz.UTC
     simulation = [
-        {"time": utc.localize(datetime(2026, 1, 1, 0)), "soc_pct": 50, "battery_charge_dc_kw": 1, "battery_discharge_dc_kw": 0, "run_version": "run"},
-        {"time": utc.localize(datetime(2026, 1, 1, 1)), "soc_pct": 60, "battery_charge_dc_kw": 0, "battery_discharge_dc_kw": 1, "run_version": "run"},
-        {"time": utc.localize(datetime(2026, 1, 1, 2)), "soc_pct": 50, "battery_charge_dc_kw": 0, "battery_discharge_dc_kw": 1, "run_version": "run"},
+        {"time": utc.localize(datetime(2026, 1, 1, 0)), "soc_pct": 50, "battery_charge_dc_kw": 1, "battery_discharge_dc_kw": 0},
+        {"time": utc.localize(datetime(2026, 1, 1, 1)), "soc_pct": 60, "battery_charge_dc_kw": 0, "battery_discharge_dc_kw": 1},
+        {"time": utc.localize(datetime(2026, 1, 1, 2)), "soc_pct": 50, "battery_charge_dc_kw": 0, "battery_discharge_dc_kw": 1},
     ]
     power = [
         {"time": utc.localize(datetime(2026, 1, 1, 0)), "value": -1},
