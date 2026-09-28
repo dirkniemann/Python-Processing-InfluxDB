@@ -12,6 +12,29 @@ logger = logging.getLogger(__name__)
 # Timezone configuration
 LOCAL_TZ = pytz.timezone("Europe/Berlin")
 UTC_TZ = pytz.UTC
+BATTERY_SCENARIO_MEASUREMENT = "batterie_szenarien"
+
+
+def _influx_api_error_message(
+    operation: str, bucket: str, org: str, error: Exception
+) -> Optional[str]:
+    """Return an actionable message for common bucket access failures."""
+    status = getattr(error, "status", None)
+    permission = "Schreib" if operation == "write" else "Lese"
+    operation_name = "Schreiboperation" if operation == "write" else "Abfrage"
+    if status == 403:
+        return (
+            f"Keine {permission}berechtigung für den InfluxDB-Bucket '{bucket}' "
+            f"(HTTP 403, Organisation '{org}'). Prüfe, ob der verwendete Token "
+            f"Zugriff mit {permission}rechten auf diesen Bucket hat."
+        )
+    if status == 404:
+        return (
+            f"Der InfluxDB-Bucket '{bucket}' wurde während der {operation_name} "
+            "nicht gefunden (HTTP 404). Prüfe Bucketname und Organisation; "
+            "falls der Bucket noch nicht existiert, lege ihn an."
+        )
+    return None
 
 
 def local_to_utc(local_dt: datetime) -> datetime:
@@ -225,8 +248,12 @@ class InfluxDBHandler:
             return results
             
         except Exception as e:
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
             logger.error(f"Error querying data: {e}", exc_info=True)
-            raise RuntimeError(f"Error querying data: {e}")
+            raise RuntimeError(f"Error querying data from bucket '{bucket}': {e}") from e
         
     def get_last_datapoint(
         self,
@@ -387,80 +414,137 @@ class InfluxDBHandler:
                     }
             return None
         except Exception as e:
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
             logger.error(f"Error querying latest data point: {e}", exc_info=True)
-            raise RuntimeError(f"Error querying latest data point: {e}")
+            raise RuntimeError(f"Error querying latest data point in bucket '{bucket}': {e}") from e
 
     def get_scenario_daily_records(
         self,
         bucket: str,
         scenario: str,
         pv_mode: str,
-        measurement: str = "battery_scenario_daily",
-        run_version: Optional[str] = None,
+        version: str,
+        measurement: str = BATTERY_SCENARIO_MEASUREMENT,
     ) -> List[Dict[str, Any]]:
-        """Return pivoted daily scenario records for restart/rebuild decisions."""
+        """Return one wide daily record per timestamp for restart decisions."""
         if not self.client:
             logger.error("Cannot query data: Client not connected")
             return []
 
-        run_filter = (
-            f'|> filter(fn: (r) => r["run_version"] == "{run_version}")'
-            if run_version else ""
-        )
         query = f'''
         from(bucket: "{bucket}")
             |> range(start: 0)
             |> filter(fn: (r) => r["_measurement"] == "{measurement}")
             |> filter(fn: (r) => r["scenario"] == "{scenario}")
             |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
-            {run_filter}
-            |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-            |> sort(columns: ["_time"])
+            |> filter(fn: (r) => r["version"] == "{version}")
+            |> filter(fn: (r) => r["_field"] == "daily_sum" or r["_field"] == "start" or r["_field"] == "end")
         '''
         try:
-            records: List[Dict[str, Any]] = []
+            records_by_time: Dict[datetime, Dict[str, Any]] = {}
             for table in self.client.query_api().query(query, org=self.org):
                 for record in table.records:
                     values = dict(getattr(record, "values", {}) or {})
-                    values["time"] = record.get_time()
-                    records.append(values)
-            records.sort(key=lambda item: item["time"])
-            return records
+                    entity = values.get("entity_id")
+                    field_name = values.get("_field")
+                    timestamp = record.get_time()
+                    target_field = self._scenario_daily_field(entity, field_name)
+                    if target_field is None:
+                        continue
+                    daily_record = records_by_time.setdefault(timestamp, {"time": timestamp})
+                    daily_record[target_field] = record.get_value()
+            return [records_by_time[key] for key in sorted(records_by_time)]
         except Exception as e:
-            logger.error(f"Error querying scenario daily records: {e}", exc_info=True)
-            raise RuntimeError(f"Error querying scenario daily records: {e}")
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(
+                "Error querying daily battery scenario records from bucket '%s' "
+                "(scenario '%s', PV mode '%s', version '%s'): %s",
+                bucket,
+                scenario,
+                pv_mode,
+                version,
+                e,
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Error querying daily battery scenario records from bucket '{bucket}': {e}"
+            ) from e
 
     def get_scenario_timeseries_records(
         self,
         bucket: str,
         scenario: str,
         pv_mode: str,
-        measurement: str = "battery_scenario_timeseries",
+        version: str,
+        measurement: str = BATTERY_SCENARIO_MEASUREMENT,
     ) -> List[Dict[str, Any]]:
-        """Return pivoted simulation intervals for diagnostic comparison."""
+        """Return wide interval records for diagnostic comparison."""
         query = f'''
         from(bucket: "{bucket}")
             |> range(start: 0)
             |> filter(fn: (r) => r["_measurement"] == "{measurement}")
             |> filter(fn: (r) => r["scenario"] == "{scenario}")
             |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
-            |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-            |> sort(columns: ["_time"])
+            |> filter(fn: (r) => r["version"] == "{version}")
+            |> filter(fn: (r) => r["_field"] == "actual")
+            |> filter(fn: (r) => r["entity_id"] == "soc_pct" or r["entity_id"] == "pv_to_battery" or r["entity_id"] == "battery_to_load")
         '''
         if not self.client:
             logger.error("Cannot query data: Client not connected")
             return []
         try:
-            records: List[Dict[str, Any]] = []
+            records_by_time: Dict[datetime, Dict[str, Any]] = {}
             for table in self.client.query_api().query(query, org=self.org):
                 for record in table.records:
                     values = dict(getattr(record, "values", {}) or {})
-                    values["time"] = record.get_time()
-                    records.append(values)
-            return sorted(records, key=lambda item: item["time"])
+                    entity = values.get("entity_id")
+                    target_field = {
+                        "soc_pct": "soc_pct",
+                        "pv_to_battery": "battery_charge_dc_kw",
+                        "battery_to_load": "battery_discharge_dc_kw",
+                    }.get(entity)
+                    if target_field is None:
+                        continue
+                    timestamp = record.get_time()
+                    interval_record = records_by_time.setdefault(timestamp, {"time": timestamp})
+                    interval_record[target_field] = record.get_value()
+            return [records_by_time[key] for key in sorted(records_by_time)]
         except Exception as e:
-            logger.error(f"Error querying scenario timeseries records: {e}", exc_info=True)
-            raise RuntimeError(f"Error querying scenario timeseries records: {e}")
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(
+                "Error querying battery scenario intervals from bucket '%s' "
+                "(scenario '%s', PV mode '%s', version '%s'): %s",
+                bucket,
+                scenario,
+                pv_mode,
+                version,
+                e,
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Error querying battery scenario intervals from bucket '{bucket}': {e}"
+            ) from e
+
+    @staticmethod
+    def _scenario_daily_field(entity: Optional[str], field_name: Optional[str]) -> Optional[str]:
+        if field_name == "daily_sum" and entity not in ("soc_pct", "stored_energy"):
+            return f"{entity}_kwh" if entity else None
+        state_fields = {
+            ("soc_pct", "start"): "soc_start_pct",
+            ("soc_pct", "end"): "soc_end_pct",
+            ("stored_energy", "start"): "stored_energy_start_kwh",
+            ("stored_energy", "end"): "stored_energy_end_kwh",
+        }
+        return state_fields.get((entity, field_name))
 
     def get_first_data_day(
         self,
@@ -570,7 +654,11 @@ class InfluxDBHandler:
                     return last_time.date()
             return None
         except Exception as e:
-            logger.error(f"Error querying last data day: {e}", exc_info=True)
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(f"Error querying last data day in bucket '{bucket}': {e}", exc_info=True)
             return None
         
     def write_datapoint(
@@ -653,8 +741,12 @@ class InfluxDBHandler:
             logger.debug("Data point written successfully")
             return True
         except Exception as e:
-            logger.error(f"Error writing data point: {e}", exc_info=True)
-            raise RuntimeError(f"Error writing data point: {e}")
+            message = _influx_api_error_message("write", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(f"Error writing data point to bucket '{bucket}': {e}", exc_info=True)
+            raise RuntimeError(f"Error writing data point to bucket '{bucket}': {e}") from e
 
     def write_fields_datapoint(
         self,
@@ -691,8 +783,69 @@ class InfluxDBHandler:
             write_api.write(bucket=bucket, org=self.org, record=point)
             return True
         except Exception as e:
-            logger.error(f"Error writing multi-field data point: {e}", exc_info=True)
-            raise RuntimeError(f"Error writing multi-field data point: {e}")
+            message = _influx_api_error_message("write", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(f"Error writing multi-field data point to bucket '{bucket}': {e}", exc_info=True)
+            raise RuntimeError(f"Error writing multi-field data point to bucket '{bucket}': {e}") from e
+
+    def write_fields_datapoints(
+        self,
+        bucket: str,
+        measurement: str,
+        datapoints: List[Dict[str, Any]],
+        batch_size: int = 5000,
+    ) -> int:
+        """Write timestamped multi-field points in bounded synchronous batches."""
+        if not self.client:
+            message = "Cannot write data: Client not connected"
+            logger.error(message)
+            raise RuntimeError(message)
+        if not measurement:
+            raise ValueError("measurement must not be empty")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if not datapoints:
+            return 0
+
+        try:
+            points = []
+            for datapoint in datapoints:
+                fields = datapoint.get("fields")
+                if not fields:
+                    raise ValueError("every datapoint must contain fields")
+                timestamp = datapoint.get("timestamp")
+                write_timestamp = timestamp if timestamp is not None else datetime.now()
+                if write_timestamp.tzinfo is None:
+                    write_timestamp = local_to_utc(write_timestamp)
+                points.append(
+                    {
+                        "measurement": measurement,
+                        "tags": dict(datapoint.get("tags") or {}),
+                        "fields": {
+                            name: float(value) if isinstance(value, (int, float)) else value
+                            for name, value in fields.items()
+                        },
+                        "time": write_timestamp.isoformat(),
+                    }
+                )
+
+            write_api = self.client.write_api(write_options=SYNCHRONOUS)
+            for offset in range(0, len(points), batch_size):
+                write_api.write(
+                    bucket=bucket,
+                    org=self.org,
+                    record=points[offset : offset + batch_size],
+                )
+            return len(points)
+        except Exception as e:
+            message = _influx_api_error_message("write", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error("Error batch-writing points to bucket '%s': %s", bucket, e, exc_info=True)
+            raise RuntimeError(f"Error batch-writing points to bucket '{bucket}': {e}") from e
         
 
     def get_last_version(

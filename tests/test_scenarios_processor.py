@@ -7,6 +7,7 @@ import pytz
 def minimal_config():
     return {
         "scenarios": {
+            "version": "v1",
             "buckets": {
                 "source_bucket": "raw",
                 "processing_bucket": "processed",
@@ -73,15 +74,49 @@ def test_runner_writes_timeseries_and_daily_points(fake_influx_module):
 
     assert runner.process(last_day=date(2026, 1, 1)) == 1
     measurements = [write["measurement"] for write in handler.writes]
-    assert measurements.count("battery_scenario_timeseries") == 1
-    assert measurements.count("battery_scenario_daily") == 1
-    timeseries = next(write for write in handler.writes if write["measurement"] == "battery_scenario_timeseries")
+    assert set(measurements) == {"batterie_szenarien"}
+    timeseries = next(
+        write for write in handler.writes
+        if write["tags"].get("entity_id") == "pv_to_load"
+        and "actual" in write["fields"]
+    )
     assert timeseries["tags"]["scenario"] == "current_battery"
     assert timeseries["tags"]["pv_mode"] == "without_old_pv"
-    assert timeseries["fields"]["pv_to_load_kw"] == 1.0
-    daily = next(write for write in handler.writes if write["measurement"] == "battery_scenario_daily")
-    assert daily["fields"]["pv_to_load_kwh"] == 24.0
-    assert daily["fields"]["pv_export_kwh"] == 43.0
+    assert timeseries["tags"]["version"] == "v1"
+    assert timeseries["tags"]["entity_id"] == "pv_to_load"
+    assert timeseries["tags"]["unit"] == "kW"
+    assert timeseries["fields"] == {"actual": 1.0}
+    assert not {"run_reason", "run_version", "model_version", "record_type"} & timeseries["tags"].keys()
+    daily_grid_import = next(
+        write for write in handler.writes
+        if write["tags"].get("entity_id") == "grid_import"
+        and "daily_sum" in write["fields"]
+    )
+    daily_grid_export = next(
+        write for write in handler.writes
+        if write["tags"].get("entity_id") == "grid_export"
+        and "daily_sum" in write["fields"]
+    )
+    daily_pv_to_load = next(
+        write for write in handler.writes
+        if write["tags"].get("entity_id") == "pv_to_load"
+        and "daily_sum" in write["fields"]
+    )
+    daily_soc = next(
+        write for write in handler.writes
+        if write["tags"].get("entity_id") == "soc_pct"
+        and "start" in write["fields"]
+    )
+    assert daily_grid_import["tags"]["unit"] == "kWh"
+    assert daily_grid_import["timestamp"] == pytz.UTC.localize(datetime(2026, 1, 1, 22, 59, 59))
+    assert daily_grid_import["fields"].keys() == {"daily_sum"}
+    assert daily_grid_export["fields"].keys() == {"daily_sum"}
+    assert daily_pv_to_load["fields"]["daily_sum"] == 24.0
+    assert daily_grid_export["fields"]["daily_sum"] == 43.0
+    assert set(daily_soc["fields"]) == {"start", "end"}
+    assert daily_soc["tags"]["unit"] == "%"
+    entities = {write["tags"]["entity_id"] for write in handler.writes}
+    assert not {"pv_export", "battery_charge_dc", "battery_discharge_dc", "battery_to_grid"} & entities
 
 
 def test_runner_resumes_from_last_complete_day_after_restart(fake_influx_module):
@@ -103,23 +138,30 @@ def test_runner_resumes_from_last_complete_day_after_restart(fake_influx_module)
             return [{"time": kwargs["start_time"], "value": 1000 if kwargs["entity_id"] == "Hausverbrauch_korrigiert" else 0}]
 
         def write_fields_datapoint(self, **kwargs):
-            if kwargs["measurement"] == "battery_scenario_daily":
-                self.daily.append({"time": kwargs["timestamp"], **kwargs["fields"], **kwargs["tags"]})
+            fields = kwargs["fields"]
+            tags = kwargs["tags"]
+            if tags.get("entity_id") == "stored_energy" and "end" in fields:
+                self.daily.append(
+                    {
+                        "time": kwargs["timestamp"],
+                        "stored_energy_start_kwh": fields["start"],
+                        "stored_energy_end_kwh": fields["end"],
+                        "version": tags["version"],
+                    }
+                )
 
     handler = Handler()
     first_runner = runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1))
     assert first_runner.process(last_day=date(2026, 1, 1)) == 1
-    first_run = handler.daily[0]["run_version"]
 
     restarted = runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1))
     assert restarted.process(last_day=date(2026, 1, 2)) == 1
     assert len(handler.daily) == 2
-    assert handler.daily[1]["local_day"] == "2026-01-02"
-    assert handler.daily[1]["run_version"] == first_run
-    assert handler.daily[1]["soc_start_pct"] == handler.daily[0]["soc_end_pct"]
+    assert handler.daily[1]["version"] == config.version
+    assert handler.daily[1]["stored_energy_start_kwh"] == handler.daily[0]["stored_energy_end_kwh"]
 
 
-def test_runner_starts_new_run_after_historical_input_change(fake_influx_module):
+def test_runner_uses_configured_version_as_the_reprocessing_boundary(fake_influx_module):
     config_module = importlib.import_module("moduls.szenarios.scenario_config")
     runner_module = importlib.import_module("moduls.szenarios.scenarios_processor")
     config = config_module.load_scenario_configuration(minimal_config())
@@ -128,34 +170,127 @@ def test_runner_starts_new_run_after_historical_input_change(fake_influx_module)
         def __init__(self):
             self.daily = []
             self.changed = False
+            self.input_queries = 0
 
         def get_scenario_daily_records(self, **kwargs):
-            return list(self.daily)
+            return [record for record in self.daily if record.get("version") == kwargs["version"]]
 
         def get_latest_datapoint_by_time(self, **kwargs):
             return {"time": kwargs["stop_time"], "value": 1000}
 
         def get_data(self, **kwargs):
+            self.input_queries += 1
             value = 2000 if self.changed and kwargs["entity_id"] == "Hausverbrauch_korrigiert" else 1000
             return [{"time": kwargs["start_time"], "value": value}]
 
         def write_fields_datapoint(self, **kwargs):
-            if kwargs["measurement"] == "battery_scenario_daily":
-                self.daily.append({"time": kwargs["timestamp"], **kwargs["fields"], **kwargs["tags"]})
+            fields = kwargs["fields"]
+            tags = kwargs["tags"]
+            if tags.get("entity_id") == "stored_energy" and "end" in fields:
+                self.daily.append(
+                    {
+                        "time": kwargs["timestamp"],
+                        "stored_energy_end_kwh": fields["end"],
+                        "version": tags["version"],
+                    }
+                )
 
     handler = Handler()
     runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1)).process(last_day=date(2026, 1, 2))
-    old_version = handler.daily[0]["run_version"]
+    original_count = len(handler.daily)
+    original_query_count = handler.input_queries
     handler.changed = True
 
-    runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1)).process(last_day=date(2026, 1, 2))
-    new_records = handler.daily[2:]
-    assert new_records
-    assert all(record["run_version"] != old_version for record in new_records)
-    assert all(record["run_reason"] == "historical_input_change" for record in new_records)
+    same_version_days = runner_module.BatteryScenarioRunner(
+        handler, config, date(2026, 1, 1)
+    ).process(last_day=date(2026, 1, 2))
+    assert same_version_days == 0
+    assert len(handler.daily) == original_count
+    assert handler.input_queries == original_query_count
+
+    changed_config = minimal_config()
+    changed_config["scenarios"]["version"] = "v2"
+    version_two = config_module.load_scenario_configuration(changed_config)
+    reprocessed_days = runner_module.BatteryScenarioRunner(
+        handler, version_two, date(2026, 1, 1)
+    ).process(last_day=date(2026, 1, 2))
+    assert reprocessed_days == 2
+    version_two_records = handler.daily[original_count:]
+    assert len(version_two_records) == 2
+    assert all(record["version"] == "v2" for record in version_two_records)
 
 
-def test_runner_marks_missing_non_change_only_source_incomplete(fake_influx_module):
+def test_runner_loads_each_source_once_per_day_for_all_scenarios(fake_influx_module):
+    config_data = minimal_config()
+    config_data["scenarios"]["sources"]["old_pv"] = {
+        "bucket_ref": "source_bucket",
+        "measurement": "W",
+        "entity_id": "old_pv",
+        "field": "value",
+    }
+    config_data["scenarios"]["pv_sources"]["old_pv"] = ["old_pv"]
+    config_data["scenarios"]["pv_modes"]["with_old_pv"] = ["local_pv", "old_pv"]
+    config_data["scenarios"]["definitions"]["second_battery"] = {
+        "enabled": True,
+        "extra_capacity_kwh": 2,
+        "extra_power_kw": 1,
+    }
+    config_module = importlib.import_module("moduls.szenarios.scenario_config")
+    runner_module = importlib.import_module("moduls.szenarios.scenarios_processor")
+    config = config_module.load_scenario_configuration(config_data)
+    day = date(2026, 1, 1)
+
+    class Handler:
+        def __init__(self):
+            self.source_reads = {}
+            self.previous_reads = {}
+            self.daily_writes = []
+
+        def get_scenario_daily_records(self, **kwargs):
+            return []
+
+        def get_latest_datapoint_by_time(self, **kwargs):
+            entity = kwargs["entity_id"]
+            self.previous_reads[entity] = self.previous_reads.get(entity, 0) + 1
+            return None
+
+        def get_data(self, **kwargs):
+            entity = kwargs["entity_id"]
+            self.source_reads[entity] = self.source_reads.get(entity, 0) + 1
+            value = 1000 if entity == "Hausverbrauch_korrigiert" else 500
+            return [{"time": kwargs["start_time"], "value": value}]
+
+        def write_fields_datapoint(self, **kwargs):
+            if kwargs["tags"].get("entity_id") == "stored_energy" and "end" in kwargs["fields"]:
+                self.daily_writes.append(kwargs)
+
+    handler = Handler()
+    runner = runner_module.BatteryScenarioRunner(handler, config, day)
+
+    assert runner.process(last_day=date(2026, 1, 2)) == 2
+    assert handler.source_reads == {
+        "Hausverbrauch_korrigiert": 2,
+        "fems_pv": 2,
+        "old_pv": 2,
+    }
+    assert handler.previous_reads == {
+        "Hausverbrauch_korrigiert": 1,
+        "fems_pv": 1,
+        "old_pv": 1,
+    }
+    assert len(handler.daily_writes) == 8
+    assert {
+        (write["tags"]["scenario"], write["tags"]["pv_mode"])
+        for write in handler.daily_writes
+    } == {
+        ("current_battery", "without_old_pv"),
+        ("current_battery", "with_old_pv"),
+        ("second_battery", "without_old_pv"),
+        ("second_battery", "with_old_pv"),
+    }
+
+
+def test_runner_skips_day_with_missing_non_change_only_source(fake_influx_module):
     config_data = minimal_config()
     config_data["scenarios"]["sources"]["fems_pv"]["change_only"] = False
     config_module = importlib.import_module("moduls.szenarios.scenario_config")
@@ -163,6 +298,9 @@ def test_runner_marks_missing_non_change_only_source_incomplete(fake_influx_modu
     config = config_module.load_scenario_configuration(config_data)
 
     class Handler:
+        def __init__(self):
+            self.writes = []
+
         def get_scenario_daily_records(self, **kwargs):
             return []
 
@@ -173,10 +311,8 @@ def test_runner_marks_missing_non_change_only_source_incomplete(fake_influx_modu
             return [{"time": kwargs["start_time"], "value": 1000}] if kwargs["entity_id"] == "Hausverbrauch_korrigiert" else []
 
         def write_fields_datapoint(self, **kwargs):
-            self.write = kwargs
+            self.writes.append(kwargs)
 
     handler = Handler()
     runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1)).process(last_day=date(2026, 1, 1))
-    assert handler.write["measurement"] == "battery_scenario_daily"
-    assert handler.write["fields"]["is_complete"] is False
-    assert "missing_initial_state:fems_pv" in handler.write["fields"]["quality_reason_code"]
+    assert handler.writes == []

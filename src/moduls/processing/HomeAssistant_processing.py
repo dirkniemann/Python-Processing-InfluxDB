@@ -317,12 +317,10 @@ class HomeAssistantProcessor:
             raise ValueError(
                 "'corrected_house_consumption.interval_seconds' must be a positive integer"
             )
-        if not isinstance(sources, dict) or set(sources) != {
-            "fems_house_consumption",
-            "mt_stall_neu_power",
-        }:
+        if not isinstance(sources, dict) or set(sources) != {"fems_house_consumption"}:
             raise ValueError(
-                "'corrected_house_consumption.sources' must define exactly the two correction sources"
+                "'corrected_house_consumption.sources' must define only the already-corrected "
+                "fems_house_consumption source"
             )
         for role, source in sources.items():
             if not isinstance(source, dict):
