@@ -207,7 +207,7 @@ class BatteryScenarioRunner:
                         "processing took %.1f s",
                         combo["name"],
                         combo["pv_mode"],
-                        self.configuration.setup.version,
+                        self.configuration.version,
                         day,
                         monotonic_time.perf_counter() - scenario_started,
                     )
