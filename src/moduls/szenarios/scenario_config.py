@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,8 @@ class ScenarioConfiguration:
     pv_modes: Dict[str, List[str]]
     definitions: Dict[str, ScenarioDefinitionWithSetup]
     validation_sources: Dict[str, ScenarioSource]
+    daily_quality_enabled: bool
+    quality_grid_power_source: Optional[ScenarioSource]
 
 
 def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration:
@@ -178,6 +180,43 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         if set(validation_sources) != {"battery_power", "battery_soc"}:
             raise ValueError("scenarios.validation must define battery_power and battery_soc")
 
+    quality_config = scenarios.get("quality", {})
+    if not isinstance(quality_config, dict):
+        raise ValueError("scenarios.quality must be a dictionary")
+    daily_quality_enabled = quality_config.get("enabled", False)
+    if not isinstance(daily_quality_enabled, bool):
+        raise ValueError("scenarios.quality.enabled must be boolean")
+    quality_grid_power_source = None
+    if daily_quality_enabled:
+        if "battery_soc" not in validation_sources:
+            raise ValueError(
+                "scenarios.quality.enabled requires scenarios.validation.battery_soc"
+            )
+        grid_source = _require_dict(quality_config, "grid_power")
+        bucket_ref = _require_string(
+            grid_source, "bucket_ref", "scenarios.quality.grid_power.bucket_ref"
+        )
+        if bucket_ref not in buckets:
+            raise ValueError(f"Unknown bucket reference: {bucket_ref}")
+        change_only = grid_source.get("change_only", True)
+        if not isinstance(change_only, bool):
+            raise ValueError("scenarios.quality.grid_power.change_only must be boolean")
+        quality_grid_power_source = ScenarioSource(
+            name="grid_power",
+            bucket=buckets[bucket_ref],
+            measurement=_require_string(
+                grid_source, "measurement", "scenarios.quality.grid_power.measurement"
+            ),
+            entity_id=_require_string(
+                grid_source, "entity_id", "scenarios.quality.grid_power.entity_id"
+            ),
+            field=_require_string(
+                grid_source, "field", "scenarios.quality.grid_power.field"
+            ),
+            version=grid_source.get("version"),
+            change_only=change_only,
+        )
+
     return ScenarioConfiguration(
         version=version,
         setup=setup,
@@ -187,6 +226,8 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         pv_modes=pv_modes,
         definitions=definitions,
         validation_sources=validation_sources,
+        daily_quality_enabled=daily_quality_enabled,
+        quality_grid_power_source=quality_grid_power_source,
     )
 
 

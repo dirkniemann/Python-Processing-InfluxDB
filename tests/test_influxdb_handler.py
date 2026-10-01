@@ -124,8 +124,12 @@ def test_scenario_daily_records_merge_entity_fields_without_local_day(fake_influ
     handler.client.query_api_obj.tables = [
         type("Table", (), {"records": [
             Record("grid_import", "daily_sum", 4.5),
+            Record("grid_import", "quality", 1.5),
+            Record("grid_import", "signed_error", -1.5),
             Record("soc_pct", "start", 30.0),
             Record("soc_pct", "end", 35.0),
+            Record("soc_pct", "quality", 2.5),
+            Record("soc_pct", "signed_error", -0.5),
             Record("stored_energy", "end", 7.0),
         ]})()
     ]
@@ -141,8 +145,12 @@ def test_scenario_daily_records_merge_entity_fields_without_local_day(fake_influ
         {
             "time": timestamp,
             "grid_import_kwh": 4.5,
+            "grid_import_quality": 1.5,
+            "grid_import_signed_error": -1.5,
             "soc_start_pct": 30.0,
             "soc_end_pct": 35.0,
+            "soc_pct_quality": 2.5,
+            "soc_pct_signed_error": -0.5,
             "stored_energy_end_kwh": 7.0,
         }
     ]

@@ -69,3 +69,40 @@ def test_all_scenarios_can_be_disabled_without_invalidating_config(prod_config):
     configuration = module.load_scenario_configuration(disabled_config)
 
     assert configuration.definitions == {}
+
+
+def test_daily_quality_configuration_is_explicit_and_resolves_grid_source(prod_config):
+    module = importlib.import_module("moduls.szenarios.scenario_config")
+    assert module.load_scenario_configuration(prod_config).daily_quality_enabled is False
+
+    quality_config = copy.deepcopy(prod_config)
+    quality_config["scenarios"]["quality"] = {
+        "enabled": True,
+        "grid_power": {
+            "bucket_ref": "source_bucket",
+            "measurement": "W",
+            "entity_id": "fems_gridactivepower",
+            "field": "value",
+            "change_only": True,
+        },
+    }
+    configuration = module.load_scenario_configuration(quality_config)
+
+    assert configuration.daily_quality_enabled is True
+    assert configuration.quality_grid_power_source is not None
+    assert configuration.quality_grid_power_source.bucket == "HomeAssistant"
+    assert configuration.quality_grid_power_source.entity_id == "fems_gridactivepower"
+
+
+def test_dev_daily_quality_uses_real_soc_measurement_name():
+    config_path = Path(__file__).parent.parent / "config" / "dev.json"
+    with config_path.open(encoding="utf-8") as config_file:
+        config_data = json.load(config_file)
+
+    module = importlib.import_module("moduls.szenarios.scenario_config")
+    configuration = module.load_scenario_configuration(config_data)
+
+    assert configuration.daily_quality_enabled is True
+    assert configuration.validation_sources["battery_soc"].measurement == "„%“"
+    assert configuration.quality_grid_power_source is not None
+    assert configuration.quality_grid_power_source.entity_id == "fems_gridactivepower"

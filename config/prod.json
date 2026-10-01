@@ -165,11 +165,14 @@
             },
             "battery_soc": {
                 "bucket_ref": "source_bucket",
-                "measurement": "%",
+                "measurement": "„%“",
                 "entity_id": "fems_esssoc",
                 "field": "value",
                 "change_only": true
             }
+        },
+        "quality": {
+            "enabled": false
         },
         "definitions": {
             "current_battery": {

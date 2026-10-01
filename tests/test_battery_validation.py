@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import importlib
 
 import pytz
@@ -75,3 +75,62 @@ def test_simulation_comparison_reports_soc_power_and_energy_differences():
     assert report.soc_mae_pct == 0
     assert report.measured_charge_energy_kwh == 1
     assert report.simulated_charge_energy_kwh == 1
+
+
+def test_daily_quality_uses_prior_state_and_reports_absolute_and_signed_errors():
+    module = importlib.import_module("moduls.szenarios.battery_validation")
+    utc = pytz.UTC
+    start = utc.localize(datetime(2026, 1, 1, 0))
+    stop = start + timedelta(hours=3)
+    simulated_soc = [
+        {"time": start, "value": 60},
+        {"time": start + timedelta(hours=2), "value": 40},
+    ]
+    measured_soc = [
+        {"time": start - timedelta(hours=1), "value": 50},
+        {"time": start + timedelta(hours=1), "value": 70},
+    ]
+    grid_power = [
+        {"time": start - timedelta(hours=1), "value": 2000},
+        {"time": start + timedelta(hours=1), "value": -1000},
+        {"time": start + timedelta(hours=2), "value": 500},
+    ]
+
+    report = module.calculate_daily_simulation_quality(
+        simulated_soc_records=simulated_soc,
+        measured_soc_records=measured_soc,
+        measured_grid_power_records=grid_power,
+        simulated_grid_import_kwh=3.5,
+        simulated_grid_export_kwh=0.25,
+        start=start,
+        stop=stop,
+    )
+
+    assert report is not None
+    assert report.soc_mae_pct == pytest.approx(50 / 3)
+    assert report.soc_signed_error_pct == pytest.approx(-10)
+    assert report.grid_import_quality_kwh == pytest.approx(1)
+    assert report.grid_import_signed_error_kwh == pytest.approx(1)
+    assert report.grid_export_quality_kwh == pytest.approx(0.75)
+    assert report.grid_export_signed_error_kwh == pytest.approx(-0.75)
+
+
+def test_daily_quality_requires_start_states_for_the_full_day():
+    module = importlib.import_module("moduls.szenarios.battery_validation")
+    utc = pytz.UTC
+    start = utc.localize(datetime(2026, 1, 1, 0))
+    stop = start + timedelta(hours=1)
+
+    report = module.calculate_daily_simulation_quality(
+        simulated_soc_records=[{"time": start, "value": 50}],
+        measured_soc_records=[
+            {"time": start + timedelta(minutes=1), "value": 50}
+        ],
+        measured_grid_power_records=[{"time": start, "value": 0}],
+        simulated_grid_import_kwh=0,
+        simulated_grid_export_kwh=0,
+        start=start,
+        stop=stop,
+    )
+
+    assert report is None

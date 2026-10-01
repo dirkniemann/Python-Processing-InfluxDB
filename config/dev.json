@@ -94,7 +94,7 @@
         }
     },
     "scenarios": {
-        "version": "v6",
+        "version": "v10",
         "buckets": {
             "source_bucket": "HomeAssistant",
             "processing_bucket": "HomeAssistant_processed",
@@ -165,8 +165,18 @@
             },
             "battery_soc": {
                 "bucket_ref": "source_bucket",
-                "measurement": "%",
+                "measurement": "„%“",
                 "entity_id": "fems_esssoc",
+                "field": "value",
+                "change_only": true
+            }
+        },
+        "quality": {
+            "enabled": true,
+            "grid_power": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "fems_gridactivepower",
                 "field": "value",
                 "change_only": true
             }
@@ -178,17 +188,17 @@
                 "extra_power_kw": 0
             },
             "8_modules_2_towers": {
-                "enabled": true,
+                "enabled": false,
                 "extra_capacity_kwh": 22.4,
                 "extra_power_kw": 0
             },
             "7_modules_1_tower": {
-                "enabled": true,
+                "enabled": false,
                 "extra_capacity_kwh": 19.6,
                 "extra_power_kw": 12.08
             },
             "14_modules_2_towers": {
-                "enabled": true,
+                "enabled": false,
                 "extra_capacity_kwh": 39.2,
                 "extra_power_kw": 6.72
             }

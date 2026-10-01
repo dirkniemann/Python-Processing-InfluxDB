@@ -441,7 +441,7 @@ class InfluxDBHandler:
             |> filter(fn: (r) => r["scenario"] == "{scenario}")
             |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
             |> filter(fn: (r) => r["version"] == "{version}")
-            |> filter(fn: (r) => r["_field"] == "daily_sum" or r["_field"] == "start" or r["_field"] == "end")
+            |> filter(fn: (r) => r["_field"] == "daily_sum" or r["_field"] == "start" or r["_field"] == "end" or r["_field"] == "quality" or r["_field"] == "signed_error")
         '''
         try:
             records_by_time: Dict[datetime, Dict[str, Any]] = {}
@@ -538,6 +538,11 @@ class InfluxDBHandler:
     def _scenario_daily_field(entity: Optional[str], field_name: Optional[str]) -> Optional[str]:
         if field_name == "daily_sum" and entity not in ("soc_pct", "stored_energy"):
             return f"{entity}_kwh" if entity else None
+        if entity in ("soc_pct", "grid_import", "grid_export") and field_name in (
+            "quality",
+            "signed_error",
+        ):
+            return f"{entity}_{field_name}"
         state_fields = {
             ("soc_pct", "start"): "soc_start_pct",
             ("soc_pct", "end"): "soc_end_pct",

@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,127 @@ class SimulationComparisonReport:
     simulated_charge_energy_kwh: Optional[float]
     measured_discharge_energy_kwh: Optional[float]
     simulated_discharge_energy_kwh: Optional[float]
+
+
+@dataclass(frozen=True)
+class DailySimulationQuality:
+    """Daily current-battery errors against measured SOC and grid power."""
+
+    soc_mae_pct: float
+    soc_signed_error_pct: float
+    grid_import_quality_kwh: float
+    grid_import_signed_error_kwh: float
+    grid_export_quality_kwh: float
+    grid_export_signed_error_kwh: float
+
+
+def calculate_daily_simulation_quality(
+    simulated_soc_records: List[Dict[str, Any]],
+    measured_soc_records: List[Dict[str, Any]],
+    measured_grid_power_records: List[Dict[str, Any]],
+    simulated_grid_import_kwh: float,
+    simulated_grid_export_kwh: float,
+    start: datetime,
+    stop: datetime,
+) -> Optional[DailySimulationQuality]:
+    """Calculate one day's time-weighted SOC error and import/export errors.
+
+    SOC and grid-power inputs use sample-and-hold semantics. The record lists
+    must contain a value at or before ``start`` so the whole local day is
+    covered. Grid power is in watts: positive means import, negative means
+    export. The measured daily totals are used only for these calculations.
+    """
+    if start.tzinfo is None or stop.tzinfo is None or stop <= start:
+        raise ValueError("quality window must be a positive timezone-aware interval")
+
+    simulated_soc = _normalise(simulated_soc_records)
+    measured_soc = _normalise(measured_soc_records)
+    grid_power = _normalise(measured_grid_power_records)
+    if not simulated_soc or not measured_soc or not grid_power:
+        return None
+
+    simulated_soc_series = _daily_series(simulated_soc, start, stop)
+    measured_soc_series = _daily_series(measured_soc, start, stop)
+    grid_series = _daily_series(grid_power, start, stop)
+    if simulated_soc_series is None or measured_soc_series is None or grid_series is None:
+        return None
+    if any(not 0 <= value <= 100 for _, value in simulated_soc_series + measured_soc_series):
+        return None
+
+    duration_s = (stop - start).total_seconds()
+    absolute_soc_error = signed_soc_error = 0.0
+    timeline = sorted(
+        {start, stop}
+        | {timestamp for timestamp, _ in simulated_soc_series}
+        | {timestamp for timestamp, _ in measured_soc_series}
+    )
+    simulated_index = measured_index = 0
+    simulated_soc_value = measured_soc_value = None
+    for timestamp, next_timestamp in zip(timeline, timeline[1:]):
+        while (
+            simulated_index < len(simulated_soc_series)
+            and simulated_soc_series[simulated_index][0] <= timestamp
+        ):
+            simulated_soc_value = simulated_soc_series[simulated_index][1]
+            simulated_index += 1
+        while (
+            measured_index < len(measured_soc_series)
+            and measured_soc_series[measured_index][0] <= timestamp
+        ):
+            measured_soc_value = measured_soc_series[measured_index][1]
+            measured_index += 1
+        if simulated_soc_value is None or measured_soc_value is None:
+            return None
+        elapsed_s = (next_timestamp - timestamp).total_seconds()
+        error = simulated_soc_value - measured_soc_value
+        absolute_soc_error += abs(error) * elapsed_s
+        signed_soc_error += error * elapsed_s
+
+    measured_import_kwh, measured_export_kwh = _integrate_grid_power(grid_series, start, stop)
+    import_signed_error = float(simulated_grid_import_kwh) - measured_import_kwh
+    export_signed_error = float(simulated_grid_export_kwh) - measured_export_kwh
+    return DailySimulationQuality(
+        soc_mae_pct=absolute_soc_error / duration_s,
+        soc_signed_error_pct=signed_soc_error / duration_s,
+        grid_import_quality_kwh=abs(import_signed_error),
+        grid_import_signed_error_kwh=import_signed_error,
+        grid_export_quality_kwh=abs(export_signed_error),
+        grid_export_signed_error_kwh=export_signed_error,
+    )
+
+
+def _daily_series(
+    records: List[Dict[str, Any]], start: datetime, stop: datetime
+) -> Optional[List[tuple[datetime, float]]]:
+    """Keep the latest state at the window start and in-window changes."""
+    previous = [record for record in records if record["time"] <= start]
+    if not previous:
+        return None
+    start_record = previous[-1]
+    by_time: Dict[datetime, float] = {start: start_record["value"]}
+    for record in records:
+        timestamp = record["time"]
+        if start < timestamp < stop:
+            by_time[timestamp] = record["value"]
+        elif timestamp == start:
+            by_time[start] = record["value"]
+    return sorted(by_time.items())
+
+
+def _integrate_grid_power(
+    series: List[tuple[datetime, float]], start: datetime, stop: datetime
+) -> tuple[float, float]:
+    import_kwh = export_kwh = 0.0
+    for index, (timestamp, value) in enumerate(series):
+        next_timestamp = series[index + 1][0] if index + 1 < len(series) else stop
+        interval_start = max(timestamp, start)
+        interval_stop = min(next_timestamp, stop)
+        if interval_stop <= interval_start:
+            continue
+        duration_hours = (interval_stop - interval_start).total_seconds() / 3600
+        import_kwh += max(value, 0.0) / 1000 * duration_hours
+        export_kwh += max(-value, 0.0) / 1000 * duration_hours
+    return import_kwh, export_kwh
 
 
 def analyze_real_battery(
@@ -191,7 +313,7 @@ def _normalise(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             numeric_value = float(value)
         except (TypeError, ValueError):
             continue
-        if timestamp.tzinfo is None:
+        if timestamp.tzinfo is None or not math.isfinite(numeric_value):
             continue
         result.append({"time": timestamp, "value": numeric_value})
     return sorted(result, key=lambda item: item["time"])

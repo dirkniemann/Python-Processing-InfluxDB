@@ -51,7 +51,7 @@ Das V1-Modell ist eine transparente Idealisierung ohne zusätzliche Lade-/Entlad
 
 Aktuell konfigurierte Annahmen sind 22,4 kWh Grundkapazität, 17,92 kW Lade- und Entladeleistung, 5–100 % SOC und 5 % Start-SOC für eine neue Simulationsversion. PV-Modi sind without_old_pv und with_old_pv. Prod schreibt in den konfigurierten Bucket Szenarios; dev schreibt nach testing.
 
-Die reale Batterie wird nur diagnostisch mit gemessener DC-Leistung und SOC verglichen. Die Untersuchung vorhandener Daten zeigte widersprüchliche Lade-/Entladeresiduen; diese Werte sind keine belastbaren Wirkungsgrade und gehen nicht als Korrekturfaktor in die Simulation ein.
+Die reale Batterie wird zusätzlich pro neu simuliertem Tag für `current_battery` bewertet, wenn `scenarios.quality.enabled` aktiv ist. Unter den Tages-Entity-IDs `soc_pct`, `grid_import` und `grid_export` werden `quality` und `signed_error` gespeichert. `quality` ist der zeitgewichtete SOC-MAE in Prozentpunkten beziehungsweise der absolute Import-/Exportfehler in kWh; `signed_error` ist Simulation minus Realität. Die realen Grid-Import- und Exportenergien aus `fems_gridactivepower` werden für den Vergleich integriert, aber nicht gespeichert. Ohne gültige Zustände an der lokalen Tagesgrenze wird die Bewertung für den Tag ausgelassen. Der Schalter ist in dev aktiviert und in prod deaktiviert. Die separate Auswertung von gemessener Batterie-DC-Leistung und SOC bleibt diagnostisch; widersprüchliche Lade-/Entladeresiduen werden nicht als Wirkungsgrad-Korrekturfaktor verwendet.
 
 ## Konfiguration
 
@@ -146,6 +146,19 @@ Der Launcher läuft im Beispiel als root und aktualisiert den Checkout vor jedem
 - infludxdb_delete.py löscht InfluxDB-Punkte anhand von Bucket, Measurement, Entity, Version und Zeitfenster. Standardziel ist der Bucket testing und das Measurement Waermepumpe_statistik. Ohne --all baut das Skript eine eingegrenzte Predicate-Abfrage; mit --all löscht es alle Daten im Zielbucket innerhalb des Zeitfensters. Die Optionen vorher prüfen und nicht mit --all gegen einen produktiven Bucket ausführen.
 
 ## TODO
+
+### Prio 1
+- Die Qulitätskontrolle der current Batterei überarbeiten. Aktuell wird um 23 Uhr ein error quality wert geschirbeen bei soc_pct und bei grid_import und grid_export. das muss auf den tagesende, wie ich das bei den anderen tageswerten auch schon machen, genauso der signed_error
+- ergänze noch ein error signal, was bei allen 3 die differenzen direkt ist, also ein grpah nachher ist und nicht nur die summe
+- der fesm_gridactivepower ist in W, die grid_import und grid_export geschichte ist in kW. korrigiere das, mache das auch in W, damit das sauber zu meinem rest passt. kontrolliere auch, wo ich noch solche ungenauigkeiten habe und die daten der simulation nicht zu den rohdaten passen, also die einheiten unterschiedlich sind
+- solche fehler sollten nicht zum skippen führen:
+2026-09-28 20:34:19 - moduls.szenarios.scenarios_processor - WARNING - Skipping daily quality for 2025-07-23: invalid battery_soc sample on2025-07-23 13:09:48.406547+00:00
+2026-09-28 20:34:20 - moduls.szenarios.scenarios_processor - WARNING - Skipping daily quality for 2025-07-23; no valid local-midnight statefor source(s): battery_soc
+mache die qulitätsberechnung stabil. es ist doch egal, ob es um mitternacht daten gibt
+## Prio 2
+- kontrolliere meinen ganzen code auf Logikfehler und dokumenteire die, fixe die erstmal noch nicht, dokumenteire es in der readme oder eine zusätzlichen datei
+- kontrolliere den code auf best practice und fehlerhadnling, wo sorgt eine exception nicht sauber für ein abbruch und so, wo sollte noch eine log mehr entstehen, das kannst du direkt fixen
+
 
 ### Vor einem aussagekräftigen DEV-Szenariolauf
 
