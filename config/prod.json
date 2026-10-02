@@ -1,6 +1,6 @@
 {
     "mqtt": {
-        "enabled": false,
+        "enabled": true,
         "host": "192.168.178.124",
         "port": 1883,
         "tls": false,
@@ -174,7 +174,7 @@
             }
         },
         "quality": {
-            "enabled": true,
+            "enabled": false,
             "grid_power": {
                 "bucket_ref": "source_bucket",
                 "measurement": "W",
