@@ -174,7 +174,7 @@
             }
         },
         "quality": {
-            "enabled": false,
+            "enabled": true,
             "grid_power": {
                 "bucket_ref": "source_bucket",
                 "measurement": "W",
