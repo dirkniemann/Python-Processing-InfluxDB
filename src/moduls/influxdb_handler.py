@@ -50,7 +50,7 @@ def local_to_utc(local_dt: datetime) -> datetime:
     if local_dt.tzinfo is not None:
         raise ValueError("Expected naive datetime, got timezone-aware")
     # Localize to Berlin timezone, then convert to UTC
-    local_aware = LOCAL_TZ.localize(local_dt)
+    local_aware = LOCAL_TZ.localize(local_dt, is_dst=None)
     return local_aware.astimezone(UTC_TZ)
 
 
@@ -191,8 +191,7 @@ class InfluxDBHandler:
             data = handler.get_data(start, 'HomeAssistant', 'sensor.power', stop_time=stop)
         """
         if not self.client:
-            logger.error("Cannot query data: Client not connected")
-            return []
+            raise RuntimeError("Cannot query data: InfluxDB client not connected")
         
         try:
             def _to_utc(dt: datetime) -> datetime:
@@ -236,7 +235,7 @@ class InfluxDBHandler:
             results = []
             for table in tables:
                 for record in table.records:
-                    utc_time = record.get_time()
+                    utc_time = record.get_time().astimezone(UTC_TZ)
                     results.append({
                         "time": utc_time,
                         "value": record.get_value()
@@ -290,8 +289,7 @@ class InfluxDBHandler:
             data = handler.get_data(start, 'HomeAssistant', 'sensor.power', stop_time=stop)
         """
         if not self.client:
-            logger.error("Cannot query data: Client not connected")
-            return None
+            raise RuntimeError("Cannot query last datapoint: InfluxDB client not connected")
         
         try:
             def _to_utc(dt: datetime) -> datetime:
@@ -336,10 +334,9 @@ class InfluxDBHandler:
             # Process results
             for table in tables:
                 for record in table.records:
-                    utc_time = record.get_time()
-                    local_time = utc_to_local(utc_time)
+                    utc_time = record.get_time().astimezone(UTC_TZ)
                     last_data = {
-                        "time": local_time,
+                        "time": utc_time,
                         "value": record.get_value()
                     }
                     logger.debug(f"Retrieved last data point for {entity_id}: {last_data}")
@@ -348,8 +345,25 @@ class InfluxDBHandler:
             logger.debug(f"No data found for {entity_id}")
             return None
         except Exception as e:
-            logger.error(f"Error querying data: {e}", exc_info=True)
-            return None
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(
+                "Error querying last datapoint in bucket '%s' for entity '%s', "
+                "field '%s' between %s and %s: %s",
+                bucket,
+                entity_id,
+                field,
+                actual_start,
+                actual_stop,
+                e,
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Error querying last datapoint in bucket '{bucket}' "
+                f"for entity '{entity_id}': {e}"
+            ) from e
 
     def get_latest_datapoint_by_time(
         self,
@@ -368,8 +382,7 @@ class InfluxDBHandler:
         numerically largest value; change-only signals need ``last()`` by time.
         """
         if not self.client:
-            logger.error("Cannot query data: Client not connected")
-            return None
+            raise RuntimeError("Cannot query first data day: InfluxDB client not connected")
 
         try:
             def _to_utc(dt: datetime) -> datetime:
@@ -409,7 +422,7 @@ class InfluxDBHandler:
             for table in tables:
                 for record in table.records:
                     return {
-                        "time": utc_to_local(record.get_time()),
+                        "time": record.get_time().astimezone(UTC_TZ),
                         "value": record.get_value(),
                     }
             return None
@@ -431,8 +444,7 @@ class InfluxDBHandler:
     ) -> List[Dict[str, Any]]:
         """Return one wide daily record per timestamp for restart decisions."""
         if not self.client:
-            logger.error("Cannot query data: Client not connected")
-            return []
+            raise RuntimeError("Cannot query scenario daily records: InfluxDB client not connected")
 
         query = f'''
         from(bucket: "{bucket}")
@@ -441,7 +453,7 @@ class InfluxDBHandler:
             |> filter(fn: (r) => r["scenario"] == "{scenario}")
             |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
             |> filter(fn: (r) => r["version"] == "{version}")
-            |> filter(fn: (r) => r["_field"] == "daily_sum" or r["_field"] == "start" or r["_field"] == "end")
+            |> filter(fn: (r) => r["_field"] == "daily_sum" or r["_field"] == "daily_value" or r["_field"] == "start" or r["_field"] == "end" or r["_field"] == "quality" or r["_field"] == "signed_error")
         '''
         try:
             records_by_time: Dict[datetime, Dict[str, Any]] = {}
@@ -450,7 +462,7 @@ class InfluxDBHandler:
                     values = dict(getattr(record, "values", {}) or {})
                     entity = values.get("entity_id")
                     field_name = values.get("_field")
-                    timestamp = record.get_time()
+                    timestamp = record.get_time().astimezone(UTC_TZ)
                     target_field = self._scenario_daily_field(entity, field_name)
                     if target_field is None:
                         continue
@@ -492,28 +504,38 @@ class InfluxDBHandler:
             |> filter(fn: (r) => r["scenario"] == "{scenario}")
             |> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")
             |> filter(fn: (r) => r["version"] == "{version}")
-            |> filter(fn: (r) => r["_field"] == "actual")
-            |> filter(fn: (r) => r["entity_id"] == "soc_pct" or r["entity_id"] == "pv_to_battery" or r["entity_id"] == "battery_to_load")
+            |> filter(fn: (r) => r["_field"] == "actual" or r["_field"] == "error")
+            |> filter(fn: (r) => r["entity_id"] == "soc_pct" or r["entity_id"] == "pv_to_battery" or r["entity_id"] == "battery_to_load" or r["entity_id"] == "grid_import" or r["entity_id"] == "grid_export")
         '''
         if not self.client:
-            logger.error("Cannot query data: Client not connected")
-            return []
+            raise RuntimeError("Cannot query scenario time-series records: InfluxDB client not connected")
         try:
             records_by_time: Dict[datetime, Dict[str, Any]] = {}
             for table in self.client.query_api().query(query, org=self.org):
                 for record in table.records:
                     values = dict(getattr(record, "values", {}) or {})
                     entity = values.get("entity_id")
-                    target_field = {
-                        "soc_pct": "soc_pct",
-                        "pv_to_battery": "battery_charge_dc_kw",
-                        "battery_to_load": "battery_discharge_dc_kw",
-                    }.get(entity)
+                    field_name = values.get("_field")
+                    if field_name == "actual":
+                        target_field = {
+                            "soc_pct": "soc_pct",
+                            "pv_to_battery": "battery_charge_dc_kw",
+                            "battery_to_load": "battery_discharge_dc_kw",
+                        }.get(entity)
+                    else:
+                        target_field = {
+                            "soc_pct": "soc_error_pct",
+                            "grid_import": "grid_import_error_w",
+                            "grid_export": "grid_export_error_w",
+                        }.get(entity)
                     if target_field is None:
                         continue
-                    timestamp = record.get_time()
+                    timestamp = record.get_time().astimezone(UTC_TZ)
                     interval_record = records_by_time.setdefault(timestamp, {"time": timestamp})
-                    interval_record[target_field] = record.get_value()
+                    value = record.get_value()
+                    if field_name == "actual" and entity != "soc_pct":
+                        value = float(value) / 1000
+                    interval_record[target_field] = value
             return [records_by_time[key] for key in sorted(records_by_time)]
         except Exception as e:
             message = _influx_api_error_message("read", bucket, self.org, e)
@@ -538,6 +560,13 @@ class InfluxDBHandler:
     def _scenario_daily_field(entity: Optional[str], field_name: Optional[str]) -> Optional[str]:
         if field_name == "daily_sum" and entity not in ("soc_pct", "stored_energy"):
             return f"{entity}_kwh" if entity else None
+        if entity in ("soc_pct", "grid_import", "grid_export") and field_name in (
+            "quality",
+            "signed_error",
+        ):
+            return f"{entity}_{field_name}"
+        if entity in ("eta_charge", "eta_discharge") and field_name == "daily_value":
+            return entity
         state_fields = {
             ("soc_pct", "start"): "soc_start_pct",
             ("soc_pct", "end"): "soc_end_pct",
@@ -579,15 +608,27 @@ class InfluxDBHandler:
             for table in tables:
                 for record in table.records:
                     first_time = record.get_time()
-                    logger.info(f"Found first data point in {bucket}: {first_time.date()}")
-                    return first_time.date()
+                    first_day = utc_to_local(first_time).date()
+                    logger.info(f"Found first data point in {bucket}: {first_day}")
+                    return first_day
             
             logger.warning(f"No data found in {bucket}")
             return None
     
         except Exception as e:
-            logger.error(f"Error querying first data day: {e}", exc_info=True)
-            return None
+            message = _influx_api_error_message("read", bucket, self.org, e)
+            if message:
+                logger.error(message)
+                raise RuntimeError(message) from None
+            logger.error(
+                "Error querying first data day in bucket '%s': %s",
+                bucket,
+                e,
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Error querying first data day in bucket '{bucket}': {e}"
+            ) from e
     
     def get_last_data_day(
         self,
@@ -618,8 +659,7 @@ class InfluxDBHandler:
             )
         """
         if not self.client:
-            logger.error("Cannot query data: Client not connected")
-            return None
+            raise RuntimeError("Cannot query last data day: InfluxDB client not connected")
         
         try:
             # Build filter for scenario if provided
@@ -649,17 +689,25 @@ class InfluxDBHandler:
             # Check if we got results
             for table in tables:
                 for record in table.records:
-                    last_time = record.get_time()
-                    logger.debug(f"Found last data point in {bucket}: {last_time.date()}")
-                    return last_time.date()
+                    last_day = utc_to_local(record.get_time()).date()
+                    logger.debug(f"Found last data point in {bucket}: {last_day}")
+                    return last_day
             return None
         except Exception as e:
             message = _influx_api_error_message("read", bucket, self.org, e)
             if message:
                 logger.error(message)
                 raise RuntimeError(message) from None
-            logger.error(f"Error querying last data day in bucket '{bucket}': {e}", exc_info=True)
-            return None
+            logger.error(
+                "Error querying last data day in bucket '%s' for version '%s': %s",
+                bucket,
+                version,
+                e,
+                exc_info=True,
+            )
+            raise RuntimeError(
+                f"Error querying last data day in bucket '{bucket}': {e}"
+            ) from e
         
     def write_datapoint(
         self,
@@ -714,7 +762,7 @@ class InfluxDBHandler:
             write_api = self.client.write_api(write_options=SYNCHRONOUS)
             
             # Use provided timestamp or current time
-            write_timestamp = timestamp if timestamp is not None else datetime.now()
+            write_timestamp = timestamp if timestamp is not None else datetime.now(UTC_TZ)
             
             # If timestamp is naive, assume it's Berlin time and convert to UTC
             if write_timestamp.tzinfo is None:
@@ -765,7 +813,7 @@ class InfluxDBHandler:
             raise ValueError("measurement and fields must not be empty")
 
         try:
-            write_timestamp = timestamp if timestamp is not None else datetime.now()
+            write_timestamp = timestamp if timestamp is not None else datetime.now(UTC_TZ)
             if write_timestamp.tzinfo is None:
                 write_timestamp = local_to_utc(write_timestamp)
 
@@ -816,7 +864,7 @@ class InfluxDBHandler:
                 if not fields:
                     raise ValueError("every datapoint must contain fields")
                 timestamp = datapoint.get("timestamp")
-                write_timestamp = timestamp if timestamp is not None else datetime.now()
+                write_timestamp = timestamp if timestamp is not None else datetime.now(UTC_TZ)
                 if write_timestamp.tzinfo is None:
                     write_timestamp = local_to_utc(write_timestamp)
                 points.append(

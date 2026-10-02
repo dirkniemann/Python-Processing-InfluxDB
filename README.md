@@ -25,7 +25,7 @@ Die normalen Prozessoren werden unter src/moduls/processing/ konfiguriert. Die B
 4. Wenn scenarios in der Konfiguration vorhanden ist, startet der Szenario-Runner. Sind keine Definitionen aktiviert, protokolliert er dies und überspringt die Simulation.
 5. Der Lauf wird mit Status, Laufzeit und Diagnose abgeschlossen; InfluxDB und MQTT werden getrennt.
 
-Die Tagesverarbeitung ist inkrementell: Prozessoren suchen den letzten geschriebenen Tag ihrer Ausgabeversion und arbeiten danach bis gestern weiter. Tagesgrenzen werden als Europe/Berlin nach UTC umgerechnet. Die allgemeinen Prozessoren bestimmen „heute“ allerdings über die lokale Systemzeitzone; das Serversystem muss deshalb aktuell auf Europe/Berlin laufen. Die Szenarioverarbeitung verwendet die Berliner Zeitzone explizit.
+Die Tagesverarbeitung ist inkrementell: Prozessoren suchen den letzten geschriebenen Tag ihrer Ausgabeversion und arbeiten danach bis gestern weiter. Tagesgrenzen werden als Europe/Berlin nach UTC umgerechnet. InfluxDB-Zeitstempel werden intern einheitlich als UTC-aware verarbeitet; Kalenderdaten werden für die Tageszuordnung nach Europe/Berlin konvertiert. Normale Prozessoren und Szenarien verwenden dadurch dieselbe Berliner Tagesgrenze, einschließlich korrekter 23- und 25-Stunden-Tage bei den Zeitumstellungen.
 
 ## Daten und fachliche Grenzen
 
@@ -45,13 +45,17 @@ Der bereits mit MT-Stall-neu korrigierte Sensor wird als Change-only-Leistungswe
 
 ### Batteriesimulation
 
-Der Runner verarbeitet jede aktivierte Szenariodefinition mit jedem konfigurierten PV-Modus. Er schreibt Leistungs- und SOC-Zeitreihen sowie lokale Tagesenergien. Tageszustände, Eingabefingerprints und Vollständigkeit werden gespeichert. Bei geänderten historischen Eingaben beginnt eine neue Simulationsversion; der SOC wird ab dem ältesten betroffenen Tag chronologisch neu berechnet.
+Der Runner verarbeitet jede aktivierte Szenariodefinition mit jedem konfigurierten PV-Modus. Er schreibt Leistungs- und SOC-Zeitreihen sowie lokale Tagesenergien. Tageszustände und die Vollständigkeit anhand des gespeicherten Tagesendzustands werden berücksichtigt. Die konfigurierte Simulationsversion ist bewusst die Reprocessing-Grenze: Wenn historische Eingaben oder Annahmen geändert werden, wird eine neue Version verwendet und der SOC ab dem ersten Tag chronologisch neu berechnet. Separate Eingabefingerprints sind dafür nicht erforderlich.
 
 Das V1-Modell ist eine transparente Idealisierung ohne zusätzliche Lade-/Entladeverluste. PV deckt zuerst die Last, Überschüsse laden den Speicher, verbleibende Überschüsse werden exportiert; bei Lastdefizit entlädt der Speicher bis zu seinen Grenzen, der Rest wird importiert. Das Modell bildet die konfigurierten DC-Leistungsgrenzen ab, ist aber keine kalibrierte Prognose und keine vollständige AC-Bilanz.
 
-Aktuell konfigurierte Annahmen sind 22,4 kWh Grundkapazität, 17,92 kW Lade- und Entladeleistung, 5–100 % SOC und 5 % Start-SOC für eine neue Simulationsversion. PV-Modi sind without_old_pv und with_old_pv. Prod schreibt in den konfigurierten Bucket Szenarios; dev schreibt nach testing.
+Aktuell konfigurierte Annahmen sind 22,4 kWh Grundkapazität, 17,92 kW Lade- und Entladeleistung, 5–100 % SOC und 5 % Start-SOC für eine neue Simulationsversion. `charge_efficiency` und `discharge_efficiency` werden global unter `scenarios.setup` für alle Batteriesimulationen gesetzt; aktuell stehen beide auf `1.0`, damit die Ergebnisse gegenüber der idealisierten V1 unverändert bleiben. PV-Modi sind without_old_pv und with_old_pv. Prod schreibt in den konfigurierten Bucket; dev schreibt nach testing.
 
-Die reale Batterie wird nur diagnostisch mit gemessener DC-Leistung und SOC verglichen. Die Untersuchung vorhandener Daten zeigte widersprüchliche Lade-/Entladeresiduen; diese Werte sind keine belastbaren Wirkungsgrade und gehen nicht als Korrekturfaktor in die Simulation ein.
+Die reale Batterie wird zusätzlich pro neu simuliertem Tag ausschließlich für `current_battery` im PV-Modus `without_old_pv` bewertet, wenn `scenarios.quality.enabled` aktiv ist. Für andere Szenarien oder `with_old_pv` werden keine Qualitäts- oder Fehlerfelder geschrieben. Unter den Tages-Entity-IDs `soc_pct`, `grid_import` und `grid_export` werden `quality` und `signed_error` gespeichert. `quality` ist der zeitgewichtete SOC-MAE in Prozentpunkten beziehungsweise der absolute Import-/Exportfehler in kWh; `signed_error` ist Simulation minus Realität. Die realen Grid-Import- und Exportenergien aus `fems_gridactivepower` werden für den Vergleich integriert, aber nicht gespeichert. Fehlt ein gültiger Wert vor der lokalen Tagesgrenze, wird der erste gültige Wert des Tages ab Tagesbeginn per Sample-and-hold verwendet; ungültige Einzelwerte verwerfen nicht den gesamten Tag. Nur vollständig fehlende oder unbrauchbare Quellen führen zum Auslassen der Tagesqualität.
+
+Die getrennte reale Wirkungsgradanalyse wird über `scenarios.efficiency.enabled` aktiviert und beeinflusst die Simulation nicht. Sie verwendet ausschließlich die aktuelle Batterie (`current_battery`), den PV-Modus `without_old_pv` und die feste Basiskapazität von 22,4 kWh. Valide Tageswerte werden im bestehenden Measurement `batterie_szenarien` des Szenario-Output-Buckets mit den Entity-IDs `eta_charge` und `eta_discharge`, der Einheit `ratio` und dem Feld `daily_value` gespeichert. `daily_sum` bleibt für Energie-Summen reserviert. Fehlende oder unplausible Lade-/Entladephasen erzeugen keine Punkte und keine Ersatzwerte. Große Rohdatenlücken werden nicht interpoliert; kleine SOC-Gegenbewegungen werden innerhalb der Analyse-Toleranz akzeptiert. DEV aktiviert die Analyse, PROD bleibt bis zur fachlichen Abnahme deaktiviert.
+
+Zusätzlich werden bei aktivierter Tagesqualität direkte, signierte Fehler-Zeitreihen mit Feld `error` geschrieben. `error` bedeutet immer Simulation minus Realität. SOC-Fehler werden in Prozentpunkten gespeichert, Grid-Import- und Grid-Export-Fehler in W. Die simulierten Leistungs-Zeitreihen (`house_load`, `pv_generation`, `pv_to_load`, `pv_to_battery`, `battery_to_load`, `grid_import`, `grid_export`) werden ebenfalls in W persistiert; die Engine rechnet intern weiterhin in kW. Der Schalter ist in dev aktiviert und in prod deaktiviert. Die separate Auswertung von gemessener Batterie-DC-Leistung und SOC bleibt diagnostisch; widersprüchliche Lade-/Entladeresiduen werden nicht als Wirkungsgrad-Korrekturfaktor verwendet.
 
 ## Konfiguration
 
@@ -147,9 +151,22 @@ Der Launcher läuft im Beispiel als root und aktualisiert den Checkout vor jedem
 
 ## TODO
 
+### Prio 1
+- [in Arbeit] Qualitätskontrolle der `current_battery` stabilisieren und Datenabdeckung sichtbar protokollieren.
+- [in Arbeit] Direkte Fehler-Zeitreihen für SOC, Grid-Import und Grid-Export ergänzen.
+- [in Arbeit] Leistungs-Zeitreihen und Fehler auf W vereinheitlichen; Rohdatenverträge und verbleibende Einheiten werden noch gegen die Influx-Inventur geprüft.
+- [erledigt] Ungültige Einzelwerte dürfen nicht mehr automatisch den gesamten Qualitätstag verwerfen; vollständig fehlende Quellen bleiben ein nachvollziehbarer Auslassgrund.
+2026-09-28 20:34:19 - moduls.szenarios.scenarios_processor - WARNING - Skipping daily quality for 2025-07-23: invalid battery_soc sample on2025-07-23 13:09:48.406547+00:00
+2026-09-28 20:34:20 - moduls.szenarios.scenarios_processor - WARNING - Skipping daily quality for 2025-07-23; no valid local-midnight statefor source(s): battery_soc
+mache die qulitätsberechnung stabil. es ist doch egal, ob es um mitternacht daten gibt
+### Prio 2
+- kontrolliere meinen ganzen code auf Logikfehler und dokumenteire die, fixe die erstmal noch nicht, dokumenteire es in der readme oder eine zusätzlichen datei
+- kontrolliere den code auf best practice und fehlerhadnling, wo sorgt eine exception nicht sauber für ein abbruch und so, wo sollte noch eine log mehr entstehen, das kannst du direkt fixen
+
+
 ### Vor einem aussagekräftigen DEV-Szenariolauf
 
-- [ ] Tagesbestimmung der normalen Prozessoren und der Simulation vereinheitlichen oder die erforderliche Systemzeitzone Europe/Berlin beim Start prüfen. Aktuell verwendet ein Teil der Pipeline die Host-Zeitzone, während die Szenarios sie explizit setzt.
+- [erledigt] Tagesbestimmung der normalen Prozessoren und der Simulation auf Europe/Berlin vereinheitlicht.
 
 ### Vor Aktivierung der Batterie in prod
 
@@ -175,5 +192,6 @@ Der Launcher läuft im Beispiel als root und aktualisiert den Checkout vor jedem
 - deploy/ sowie cron.d_influx_job und run_script.sh – Linux-Betrieb.
 - tests/ – Unit- und Komponentenprüfungen.
 - tools/influx_audit/ – read-only Inventurhilfe für InfluxDB.
+- docs/code-audit-prio2.md – dokumentierte Prio-2-Befunde und offene Abnahmerisiken.
 
-Zuletzt lokal geprüfter Stand: 72 Tests bestanden. Tests bei Code- oder Konfigurationsänderungen erneut ausführen.
+Zuletzt lokal geprüfter Stand: 93 Tests bestanden. Tests bei Code- oder Konfigurationsänderungen erneut ausführen.

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -11,6 +11,8 @@ class BatterySetup:
     max_soc_pct: float
     initial_soc_pct: float
     loss_model: str
+    charge_efficiency: float
+    discharge_efficiency: float
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,8 @@ class ScenarioSource:
     field: str
     version: str | None = None
     change_only: bool = False
+    allow_negative: bool = False
+    negative_as_pv: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,9 @@ class ScenarioConfiguration:
     pv_modes: Dict[str, List[str]]
     definitions: Dict[str, ScenarioDefinitionWithSetup]
     validation_sources: Dict[str, ScenarioSource]
+    daily_quality_enabled: bool
+    quality_grid_power_source: Optional[ScenarioSource]
+    efficiency_enabled: bool
 
 
 def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration:
@@ -91,6 +98,8 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         max_soc_pct=_number(setup_values, "max_soc_pct"),
         initial_soc_pct=_number(setup_values, "initial_soc_pct"),
         loss_model=_require_string(setup_values, "loss_model", "scenarios.setup.loss_model"),
+        charge_efficiency=_efficiency_number(setup_values, "charge_efficiency"),
+        discharge_efficiency=_efficiency_number(setup_values, "discharge_efficiency"),
     )
     if not 0 <= setup.min_soc_pct < setup.max_soc_pct <= 100:
         raise ValueError("SOC limits must satisfy 0 <= min < max <= 100")
@@ -109,14 +118,31 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         change_only = source.get("change_only", False)
         if not isinstance(change_only, bool):
             raise ValueError(f"scenarios.sources.{name}.change_only must be boolean")
+        source_version = source.get("version")
+        if source_version is not None and (
+            not isinstance(source_version, str) or not source_version.strip()
+        ):
+            raise ValueError(f"scenarios.sources.{name}.version must be a non-empty string or null")
+        allow_negative = source.get("allow_negative", False)
+        negative_as_pv = source.get("negative_as_pv", False)
+        if not isinstance(allow_negative, bool):
+            raise ValueError(f"scenarios.sources.{name}.allow_negative must be boolean")
+        if not isinstance(negative_as_pv, bool):
+            raise ValueError(f"scenarios.sources.{name}.negative_as_pv must be boolean")
+        if negative_as_pv and not allow_negative:
+            raise ValueError(
+                f"scenarios.sources.{name}.negative_as_pv requires allow_negative"
+            )
         sources[name] = ScenarioSource(
             name=name,
             bucket=buckets[bucket_ref],
             measurement=_require_string(source, "measurement", f"scenarios.sources.{name}.measurement"),
             entity_id=_require_string(source, "entity_id", f"scenarios.sources.{name}.entity_id"),
             field=_require_string(source, "field", f"scenarios.sources.{name}.field"),
-            version=source.get("version"),
+            version=source_version,
             change_only=change_only,
+            allow_negative=allow_negative,
+            negative_as_pv=negative_as_pv,
         )
 
     pv_sources_config = _require_dict(scenarios, "pv_sources")
@@ -178,6 +204,54 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         if set(validation_sources) != {"battery_power", "battery_soc"}:
             raise ValueError("scenarios.validation must define battery_power and battery_soc")
 
+    quality_config = scenarios.get("quality", {})
+    if not isinstance(quality_config, dict):
+        raise ValueError("scenarios.quality must be a dictionary")
+    daily_quality_enabled = quality_config.get("enabled", False)
+    if not isinstance(daily_quality_enabled, bool):
+        raise ValueError("scenarios.quality.enabled must be boolean")
+    quality_grid_power_source = None
+    if daily_quality_enabled:
+        if "battery_soc" not in validation_sources:
+            raise ValueError(
+                "scenarios.quality.enabled requires scenarios.validation.battery_soc"
+            )
+        grid_source = _require_dict(quality_config, "grid_power")
+        bucket_ref = _require_string(
+            grid_source, "bucket_ref", "scenarios.quality.grid_power.bucket_ref"
+        )
+        if bucket_ref not in buckets:
+            raise ValueError(f"Unknown bucket reference: {bucket_ref}")
+        change_only = grid_source.get("change_only", True)
+        if not isinstance(change_only, bool):
+            raise ValueError("scenarios.quality.grid_power.change_only must be boolean")
+        quality_grid_power_source = ScenarioSource(
+            name="grid_power",
+            bucket=buckets[bucket_ref],
+            measurement=_require_string(
+                grid_source, "measurement", "scenarios.quality.grid_power.measurement"
+            ),
+            entity_id=_require_string(
+                grid_source, "entity_id", "scenarios.quality.grid_power.entity_id"
+            ),
+            field=_require_string(
+                grid_source, "field", "scenarios.quality.grid_power.field"
+            ),
+            version=grid_source.get("version"),
+            change_only=change_only,
+        )
+
+    efficiency_config = scenarios.get("efficiency", {})
+    if not isinstance(efficiency_config, dict):
+        raise ValueError("scenarios.efficiency must be a dictionary")
+    efficiency_enabled = efficiency_config.get("enabled", False)
+    if not isinstance(efficiency_enabled, bool):
+        raise ValueError("scenarios.efficiency.enabled must be boolean")
+    if efficiency_enabled and set(validation_sources) != {"battery_power", "battery_soc"}:
+        raise ValueError(
+            "scenarios.efficiency.enabled requires battery_power and battery_soc validation sources"
+        )
+
     return ScenarioConfiguration(
         version=version,
         setup=setup,
@@ -187,6 +261,9 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
         pv_modes=pv_modes,
         definitions=definitions,
         validation_sources=validation_sources,
+        daily_quality_enabled=daily_quality_enabled,
+        quality_grid_power_source=quality_grid_power_source,
+        efficiency_enabled=efficiency_enabled,
     )
 
 
@@ -222,4 +299,14 @@ def _nonnegative_number(parent: Dict[str, Any], key: str) -> float:
     value = _number(parent, key)
     if value < 0:
         raise ValueError(f"{key} must be non-negative")
+    return value
+
+
+def _efficiency_number(parent: Dict[str, Any], key: str) -> float:
+    value = parent.get(key, 1.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be numeric")
+    value = float(value)
+    if not 0 < value <= 1:
+        raise ValueError(f"{key} must be greater than 0 and at most 1")
     return value

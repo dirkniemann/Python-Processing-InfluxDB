@@ -6,7 +6,7 @@
         "tls": false,
         "username_env": "MQTT_USERNAME",
         "password_env": "MQTT_PASSWORD",
-        "client_id": "python-processing-prod",
+        "client_id": "python-processing-dev",
         "topic_prefix": "python-processing",
         "discovery_prefix": "homeassistant",
         "qos": 1,
@@ -37,10 +37,10 @@
                 ]
             },
             "Waermepumpe_statistik": {
-                "version": "v3",
+                "version": "v1",
                 "source_version": "v1",
                 "compressor_post_run_minutes": 15,
-                "emit_daily_summary": false,
+                "emit_daily_summary": true,
                 "output_measurement": "Waermepumpe_statistik",
                 "output_entity_id": "Gesamt",
                 "sensors": {
@@ -77,8 +77,8 @@
                 }
             },
             "corrected_house_consumption": {
-                "version": "v4",
-                "interval_seconds": 300,
+                "version": "v1",
+                "interval_seconds": 90,
                 "output_measurement": "Hausverbrauch_korrigiert",
                 "output_entity_id": "Hausverbrauch_korrigiert",
                 "sources": {
@@ -94,11 +94,11 @@
         }
     },
     "scenarios": {
-        "version": "v2",
+        "version": "v1",
         "buckets": {
             "source_bucket": "HomeAssistant",
             "processing_bucket": "HomeAssistant_processed",
-            "output_bucket": "Szenarios"
+            "output_bucket": "Scenarios"
         },
         "setup": {
             "base_capacity_kwh": 22.4,
@@ -107,7 +107,9 @@
             "min_soc_pct": 5,
             "max_soc_pct": 100,
             "initial_soc_pct": 5,
-            "loss_model": "idealized_no_additional_losses_v1"
+            "loss_model": "idealized_no_additional_losses_v1",
+            "charge_efficiency": 1.0,
+            "discharge_efficiency": 1.0
         },
         "sources": {
             "corrected_house_load": {
@@ -115,7 +117,7 @@
                 "measurement": "Hausverbrauch_korrigiert",
                 "entity_id": "Hausverbrauch_korrigiert",
                 "field": "value",
-                "version": "v4",
+                "version": "v1",
                 "change_only": true
             },
             "fems_pv": {
@@ -165,15 +167,28 @@
             },
             "battery_soc": {
                 "bucket_ref": "source_bucket",
-                "measurement": "%",
+                "measurement": "„%“",
                 "entity_id": "fems_esssoc",
                 "field": "value",
                 "change_only": true
             }
         },
+        "quality": {
+            "enabled": false,
+            "grid_power": {
+                "bucket_ref": "source_bucket",
+                "measurement": "W",
+                "entity_id": "fems_gridactivepower",
+                "field": "value",
+                "change_only": true
+            }
+        },
+        "efficiency": {
+            "enabled": true
+        },
         "definitions": {
             "current_battery": {
-                "enabled": false,
+                "enabled": true,
                 "extra_capacity_kwh": 0,
                 "extra_power_kw": 0
             },

@@ -12,7 +12,7 @@ def get_days_to_process(last_data_day: datetime.date) -> List[datetime.date]:
     """
     days_to_process = []
     current_day = last_data_day + timedelta(days=1)
-    today = datetime.now().date()
+    today = datetime.now(LOCAL_TZ).date()
     yesterday = today - timedelta(days=1)
 
     while current_day <= yesterday:

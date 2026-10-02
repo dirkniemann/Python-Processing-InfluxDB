@@ -75,7 +75,7 @@ def load_configuration(stage: str) -> dict:
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
     
-    with open(config_path, 'r') as f:
+    with open(config_path, encoding='utf-8') as f:
         return json.load(f)
 
 
@@ -178,7 +178,14 @@ def main() -> int:
                 first_data_day=first_data_day,
             )
             scenario_days = scenario_runner.process()
-            scenario_runner.validate_real_battery()
+            try:
+                scenario_runner.validate_real_battery()
+            except Exception:
+                logger.warning(
+                    "Real battery quality/efficiency analysis failed; "
+                    "simulation output remains complete",
+                    exc_info=True,
+                )
             days_processed = max(days_processed, scenario_days)
             scenario_date = getattr(scenario_runner, "last_complete_date", None)
             if scenario_date is not None and last_processed_date is not None:
