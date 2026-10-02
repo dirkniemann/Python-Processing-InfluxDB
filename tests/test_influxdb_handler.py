@@ -1,6 +1,7 @@
 import importlib
 from datetime import datetime
 import pytz
+import pytest
 
 
 def test_local_to_utc_and_back(fake_influx_module):
@@ -11,6 +12,18 @@ def test_local_to_utc_and_back(fake_influx_module):
     assert utc_dt.tzinfo == pytz.UTC
     round_trip = handler_module.utc_to_local(utc_dt)
     assert round_trip.tzinfo.zone == handler_module.LOCAL_TZ.zone
+
+
+def test_local_to_utc_rejects_ambiguous_and_nonexistent_dst_times(fake_influx_module):
+    handler_module = importlib.import_module("moduls.influxdb_handler")
+    importlib.reload(handler_module)
+
+    for local_time in (
+        datetime(2026, 3, 29, 2, 30),
+        datetime(2026, 10, 25, 2, 30),
+    ):
+        with pytest.raises((pytz.NonExistentTimeError, pytz.AmbiguousTimeError)):
+            handler_module.local_to_utc(local_time)
 
 
 def test_connect_uses_fake_client(fake_influx_module):
@@ -31,7 +44,35 @@ def test_get_last_datapoint_returns_latest(fake_influx_module, fake_tz_datetime)
     handler.client.query_api_obj.tables = [table]
     result = handler.get_last_datapoint(start_time=datetime(2024, 1, 1), bucket="b", entity_id="e")
     assert result["value"] == 7
-    assert result["time"].tzinfo.zone == handler_module.LOCAL_TZ.zone
+    assert result["time"].tzinfo == handler_module.UTC_TZ
+
+
+def test_data_day_uses_berlin_calendar_date(fake_influx_module):
+    handler_module = importlib.import_module("moduls.influxdb_handler")
+    importlib.reload(handler_module)
+    handler = handler_module.InfluxDBHandler()
+    handler.client = handler_module.InfluxDBClient()
+    utc_before_local_midnight = pytz.UTC.localize(datetime(2026, 1, 1, 23, 30))
+    handler.client.query_api_obj.tables = [
+        type(
+            "Table",
+            (),
+            {
+                "records": [
+                    type(
+                        "Record",
+                        (),
+                        {
+                            "get_time": lambda self: utc_before_local_midnight,
+                        },
+                    )()
+                ]
+            },
+        )()
+    ]
+
+    assert handler.get_first_data_day(bucket="input") == datetime(2026, 1, 2).date()
+    assert handler.get_last_data_day(bucket="input", version="v1") == datetime(2026, 1, 2).date()
 
 
 def test_write_datapoint_writes_record(fake_influx_module):
@@ -130,6 +171,7 @@ def test_scenario_daily_records_merge_entity_fields_without_local_day(fake_influ
             Record("soc_pct", "end", 35.0),
             Record("soc_pct", "quality", 2.5),
             Record("soc_pct", "signed_error", -0.5),
+            Record("eta_charge", "daily_value", 0.91),
             Record("stored_energy", "end", 7.0),
         ]})()
     ]
@@ -151,6 +193,7 @@ def test_scenario_daily_records_merge_entity_fields_without_local_day(fake_influ
             "soc_end_pct": 35.0,
             "soc_pct_quality": 2.5,
             "soc_pct_signed_error": -0.5,
+            "eta_charge": 0.91,
             "stored_energy_end_kwh": 7.0,
         }
     ]
@@ -164,8 +207,8 @@ def test_scenario_timeseries_records_merge_actual_fields_by_timestamp(fake_influ
     timestamp = pytz.UTC.localize(datetime(2026, 1, 1, 12))
 
     class Record:
-        def __init__(self, entity, value):
-            self.values = {"entity_id": entity, "_field": "actual"}
+        def __init__(self, entity, value, field="actual"):
+            self.values = {"entity_id": entity, "_field": field}
             self.value = value
 
         def get_time(self):
@@ -177,8 +220,10 @@ def test_scenario_timeseries_records_merge_actual_fields_by_timestamp(fake_influ
     handler.client.query_api_obj.tables = [
         type("Table", (), {"records": [
             Record("soc_pct", 50.0),
-            Record("pv_to_battery", 1.0),
-            Record("battery_to_load", 0.5),
+            Record("pv_to_battery", 1000.0),
+            Record("battery_to_load", 500.0),
+            Record("grid_import", 100.0, "error"),
+            Record("grid_export", -50.0, "error"),
         ]})()
     ]
 
@@ -195,6 +240,8 @@ def test_scenario_timeseries_records_merge_actual_fields_by_timestamp(fake_influ
             "soc_pct": 50.0,
             "battery_charge_dc_kw": 1.0,
             "battery_discharge_dc_kw": 0.5,
+            "grid_import_error_w": 100.0,
+            "grid_export_error_w": -50.0,
         }
     ]
 

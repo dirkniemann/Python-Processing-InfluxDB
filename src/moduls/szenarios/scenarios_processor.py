@@ -16,7 +16,9 @@ from moduls.szenarios.battery_engine import BatteryScenarioEngine, BatteryState,
 from moduls.szenarios.battery_validation import (
     BatteryValidationReport,
     analyze_real_battery,
+    calculate_daily_battery_efficiency,
     calculate_daily_simulation_quality,
+    calculate_timeseries_simulation_errors,
     compare_simulation_to_real,
 )
 from moduls.szenarios.scenario_config import ScenarioConfiguration, ScenarioDefinitionWithSetup
@@ -48,6 +50,8 @@ class BatteryScenarioRunner:
         self.first_data_day = first_data_day
         self.output_bucket = scenario_config.buckets["output_bucket"]
         self.last_complete_date: Optional[date] = None
+        self.quality_valid_points = 0
+        self.quality_skipped_points = 0
 
     def process(self, last_day: Optional[date] = None) -> int:
         if not self.configuration.definitions:
@@ -198,7 +202,7 @@ class BatteryScenarioRunner:
                 input_day = self._select_input_sources(raw_day, combo["required_sources"])
                 scenario_started = monotonic_time.perf_counter()
                 try:
-                    simulated_soc_records, simulated_daily = self._process_day(
+                    simulated_soc_records, simulated_daily, simulated_interval_records = self._process_day(
                         combo["name"],
                         combo["pv_mode"],
                         combo["definition"],
@@ -208,6 +212,7 @@ class BatteryScenarioRunner:
                     if (
                         self.configuration.daily_quality_enabled
                         and combo["name"] == "current_battery"
+                        and combo["pv_mode"] == "without_old_pv"
                     ):
                         if not quality_inputs_attempted:
                             quality_inputs_attempted = True
@@ -240,6 +245,7 @@ class BatteryScenarioRunner:
                                     stop=stop,
                                 )
                                 if quality is None:
+                                    self.quality_skipped_points += 3
                                     logger.warning(
                                         "Skipping daily quality for current_battery/%s on %s; "
                                         "real and simulated values do not cover the full day",
@@ -247,6 +253,7 @@ class BatteryScenarioRunner:
                                         day,
                                     )
                                 else:
+                                    self._record_quality_stats(quality)
                                     timestamp = local_to_utc(
                                         datetime.combine(
                                             day, time(hour=23, minute=59, second=59)
@@ -255,6 +262,12 @@ class BatteryScenarioRunner:
                                     self._write_daily_quality(
                                         combo["pv_mode"], timestamp, quality
                                     )
+                                errors = calculate_timeseries_simulation_errors(
+                                    simulated_records=simulated_interval_records,
+                                    measured_soc_records=quality_inputs["battery_soc"],
+                                    measured_grid_power_records=quality_inputs["grid_power"],
+                                )
+                                self._write_timeseries_errors(combo["pv_mode"], errors)
                             except Exception:
                                 logger.warning(
                                     "Could not calculate or write daily quality for "
@@ -297,6 +310,13 @@ class BatteryScenarioRunner:
             if latest_complete is not None:
                 complete_dates.append(latest_complete)
         self.last_complete_date = min(complete_dates) if complete_dates else None
+        quality_total = self.quality_valid_points + self.quality_skipped_points
+        logger.info(
+            "Quality summary: valid points=%d invalid/skipped points=%d quality coverage=%.1f%%",
+            self.quality_valid_points,
+            self.quality_skipped_points,
+            100 * self.quality_valid_points / quality_total if quality_total else 0.0,
+        )
         return processed_days
 
     def validate_real_battery(self, last_day: Optional[date] = None) -> Optional[BatteryValidationReport]:
@@ -332,6 +352,10 @@ class BatteryScenarioRunner:
             capacity_kwh=self.configuration.setup.base_capacity_kwh,
         )
         logger.info("Real battery validation: %s", report)
+        if self.configuration.efficiency_enabled:
+            self._write_daily_efficiency_analysis(
+                records["battery_power"], records["battery_soc"], start, stop
+            )
         timeseries_method = getattr(self.influx_handler, "get_scenario_timeseries_records", None)
         if timeseries_method is not None:
             simulation_records = timeseries_method(
@@ -348,6 +372,90 @@ class BatteryScenarioRunner:
                 )
                 logger.info("Current battery simulation comparison: %s", comparison)
         return report
+
+    def _write_daily_efficiency_analysis(
+        self,
+        power_records: List[Dict[str, Any]],
+        soc_records: List[Dict[str, Any]],
+        start: datetime,
+        stop: datetime,
+    ) -> None:
+        valid_charge_days = valid_discharge_days = 0
+        total_charge_energy = total_discharge_energy = 0.0
+        total_stored_energy = total_removed_energy = 0.0
+        day = utc_to_local(start).date()
+        last_day = utc_to_local(stop - timedelta(microseconds=1)).date()
+        while day <= last_day:
+            day_start = local_to_utc(datetime.combine(day, time.min))
+            day_stop = local_to_utc(datetime.combine(day + timedelta(days=1), time.min))
+            daily = calculate_daily_battery_efficiency(
+                power_records=power_records,
+                soc_records=soc_records,
+                capacity_kwh=22.4,
+                start=day_start,
+                stop=day_stop,
+            )
+            timestamp = local_to_utc(
+                datetime.combine(day, time(hour=23, minute=59, second=59))
+            )
+            points = []
+            if daily.charge_efficiency is not None:
+                valid_charge_days += 1
+                total_charge_energy += daily.charge_energy_kwh
+                total_stored_energy += daily.stored_energy_kwh
+                points.append(
+                    {
+                        "fields": {"daily_value": daily.charge_efficiency},
+                        "tags": self._tags("current_battery", "without_old_pv", "eta_charge", "ratio"),
+                        "timestamp": timestamp,
+                    }
+                )
+            if daily.discharge_efficiency is not None:
+                valid_discharge_days += 1
+                total_discharge_energy += daily.discharge_energy_kwh
+                total_removed_energy += daily.removed_energy_kwh
+                points.append(
+                    {
+                        "fields": {"daily_value": daily.discharge_efficiency},
+                        "tags": self._tags("current_battery", "without_old_pv", "eta_discharge", "ratio"),
+                        "timestamp": timestamp,
+                    }
+                )
+            self._write_points(points)
+            if daily.valid_charge_phases == 0 and daily.valid_discharge_phases == 0:
+                logger.debug("Skipping battery efficiency for %s: no valid phase", day)
+            day += timedelta(days=1)
+
+        logger.info(
+            "Battery efficiency summary: charge valid days=%d total energy=%.3f kWh eta_charge=%s; "
+            "discharge valid days=%d total energy=%.3f kWh eta_discharge=%s",
+            valid_charge_days,
+            total_charge_energy,
+            (total_stored_energy / total_charge_energy if total_charge_energy else None),
+            valid_discharge_days,
+            total_discharge_energy,
+            (total_discharge_energy / total_removed_energy if total_removed_energy else None),
+        )
+
+    def _write_points(self, points: List[Dict[str, Any]]) -> None:
+        if not points:
+            return
+        write_many = getattr(self.influx_handler, "write_fields_datapoints", None)
+        if write_many is not None:
+            write_many(
+                bucket=self.output_bucket,
+                measurement=BATTERY_SCENARIO_MEASUREMENT,
+                datapoints=points,
+            )
+            return
+        for point in points:
+            self.influx_handler.write_fields_datapoint(
+                bucket=self.output_bucket,
+                measurement=BATTERY_SCENARIO_MEASUREMENT,
+                fields=point["fields"],
+                tags=point["tags"],
+                timestamp=point["timestamp"],
+            )
 
     def _required_sources(self, pv_mode: str) -> set[str]:
         required = {"corrected_house_load"}
@@ -420,6 +528,7 @@ class BatteryScenarioRunner:
         )
 
         records_by_time: Dict[datetime, float] = {}
+        invalid_sample_count = 0
         for record in raw_records:
             timestamp = record.get("time")
             value = self._quality_numeric_value(record.get("value"))
@@ -430,14 +539,23 @@ class BatteryScenarioRunner:
                 or value is None
                 or (source.name == "battery_soc" and not 0 <= value <= 100)
             ):
+                invalid_sample_count += 1
                 logger.warning(
-                    "Skipping daily quality for %s: invalid %s sample on %s",
+                    "Ignoring invalid daily quality sample for %s: %s on %s",
                     day,
                     source.name,
                     timestamp,
                 )
-                return None
+                continue
             records_by_time[timestamp] = value
+
+        if invalid_sample_count:
+            logger.warning(
+                "Ignored %d invalid daily quality sample(s) for %s on %s",
+                invalid_sample_count,
+                source.name,
+                day,
+            )
 
         previous_value = (
             self._quality_numeric_value(previous.get("value"))
@@ -445,6 +563,15 @@ class BatteryScenarioRunner:
             else None
         )
         start_value = records_by_time.get(start, previous_value)
+        if start_value is None and records_by_time:
+            start_value = next(iter(records_by_time.values()))
+            logger.warning(
+                "Bootstrapping daily quality source %s on %s from first valid "
+                "in-day sample at %s; no prior valid state was available",
+                source.name,
+                day,
+                min(records_by_time),
+            )
         if start_value is None or (
             source.name == "battery_soc" and not 0 <= start_value <= 100
         ):
@@ -479,32 +606,57 @@ class BatteryScenarioRunner:
         return numeric_value if math.isfinite(numeric_value) else None
 
     def _write_daily_quality(self, pv_mode, timestamp, quality) -> None:
-        points = [
-            {
-                "fields": {
-                    "quality": quality.soc_mae_pct,
-                    "signed_error": quality.soc_signed_error_pct,
-                },
-                "tags": self._tags("current_battery", pv_mode, "soc_pct", "%"),
-                "timestamp": timestamp,
-            },
-            {
-                "fields": {
-                    "quality": quality.grid_import_quality_kwh,
-                    "signed_error": quality.grid_import_signed_error_kwh,
-                },
-                "tags": self._tags("current_battery", pv_mode, "grid_import", "kWh"),
-                "timestamp": timestamp,
-            },
-            {
-                "fields": {
-                    "quality": quality.grid_export_quality_kwh,
-                    "signed_error": quality.grid_export_signed_error_kwh,
-                },
-                "tags": self._tags("current_battery", pv_mode, "grid_export", "kWh"),
-                "timestamp": timestamp,
-            },
-        ]
+        points = []
+        for entity, unit, quality_value, signed_value in (
+            ("soc_pct", "%", quality.soc_mae_pct, quality.soc_signed_error_pct),
+            ("grid_import", "kWh", quality.grid_import_quality_kwh, quality.grid_import_signed_error_kwh),
+            ("grid_export", "kWh", quality.grid_export_quality_kwh, quality.grid_export_signed_error_kwh),
+        ):
+            if quality_value is None or signed_value is None:
+                continue
+            points.append(
+                {
+                    "fields": {"quality": quality_value, "signed_error": signed_value},
+                    "tags": self._tags("current_battery", pv_mode, entity, unit),
+                    "timestamp": timestamp,
+                }
+            )
+        self._write_points(points)
+
+    def _record_quality_stats(self, quality) -> None:
+        values = (
+            quality.soc_mae_pct,
+            quality.grid_import_quality_kwh,
+            quality.grid_export_quality_kwh,
+        )
+        self.quality_valid_points += sum(value is not None for value in values)
+        self.quality_skipped_points += sum(value is None for value in values)
+
+    def _write_timeseries_errors(self, pv_mode, errors) -> None:
+        points = []
+        for error in errors:
+            timestamp = error["time"]
+            points.extend(
+                [
+                    {
+                        "fields": {"error": error["soc_pct"]},
+                        "tags": self._tags("current_battery", pv_mode, "soc_pct", "%"),
+                        "timestamp": timestamp,
+                    },
+                    {
+                        "fields": {"error": error["grid_import_w"]},
+                        "tags": self._tags("current_battery", pv_mode, "grid_import", "W"),
+                        "timestamp": timestamp,
+                    },
+                    {
+                        "fields": {"error": error["grid_export_w"]},
+                        "tags": self._tags("current_battery", pv_mode, "grid_export", "W"),
+                        "timestamp": timestamp,
+                    },
+                ]
+            )
+        if not points:
+            return
         write_many = getattr(self.influx_handler, "write_fields_datapoints", None)
         if write_many is not None:
             write_many(
@@ -553,7 +705,9 @@ class BatteryScenarioRunner:
                 )
                 if previous is not None:
                     previous_value = self._numeric_value(previous.get("value"), name)
-                    if previous_value is not None and previous_value >= 0:
+                    if previous_value is not None and (
+                        previous_value >= 0 or source.allow_negative
+                    ):
                         initial_values[name] = previous_value
                     elif previous_value is not None:
                         reasons.append(f"invalid_previous_value:{name}")
@@ -581,7 +735,11 @@ class BatteryScenarioRunner:
             for record in records:
                 event_time = record.get("time")
                 value = self._numeric_value(record.get("value"), name)
-                if event_time is None or value is None or value < 0:
+                if (
+                    event_time is None
+                    or value is None
+                    or (value < 0 and not source.allow_negative)
+                ):
                     reasons.append(f"invalid_value:{name}")
                     continue
                 if day_start <= event_time < day_end:
@@ -723,7 +881,7 @@ class BatteryScenarioRunner:
         definition: ScenarioDefinitionWithSetup,
         state: BatteryState,
         input_day: InputDay,
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, float], List[Dict[str, Any]]]:
         day_start = local_to_utc(datetime.combine(input_day.day, time.min))
         day_stop = local_to_utc(datetime.combine(input_day.day + timedelta(days=1), time.min))
         daily_timestamp = local_to_utc(
@@ -745,10 +903,13 @@ class BatteryScenarioRunner:
             definition=definition,
             min_soc_pct=self.configuration.setup.min_soc_pct,
             max_soc_pct=self.configuration.setup.max_soc_pct,
+            charge_efficiency=self.configuration.setup.charge_efficiency,
+            discharge_efficiency=self.configuration.setup.discharge_efficiency,
         )
         start_energy = state.stored_energy_kwh
         daily = defaultdict(float)
         simulated_soc_records: List[Dict[str, Any]] = []
+        simulated_interval_records: List[Dict[str, Any]] = []
         interval_points = []
         for index, timestamp in enumerate(timestamps[:-1]):
             values.update(input_day.events.get(timestamp, {}))
@@ -760,8 +921,25 @@ class BatteryScenarioRunner:
                     f"Cannot simulate interval at {timestamp}: missing valid values for "
                     f"{', '.join(sorted(missing_values))}"
                 )
-            load_kw = self._require_value(values, "corrected_house_load")
+            load_source = self.configuration.sources["corrected_house_load"]
+            load_kw = self._require_value(
+                values,
+                "corrected_house_load",
+                allow_negative=load_source.allow_negative,
+            )
             pv_kw = self._pv_for_mode(values, pv_mode)
+            if load_kw < 0:
+                if not load_source.negative_as_pv:
+                    raise ValueError(
+                        "Negative corrected house load requires negative_as_pv=true"
+                    )
+                pv_kw += -load_kw
+                load_kw = 0.0
+                logger.debug(
+                    "Treating negative corrected house load at %s as additional PV: %.6f kW",
+                    timestamp,
+                    -values["corrected_house_load"],
+                )
             result = engine.simulate_interval(
                 state=state,
                 timestamp=timestamp,
@@ -772,6 +950,14 @@ class BatteryScenarioRunner:
             interval_points.extend(self._write_timeseries(scenario_name, pv_mode, result))
             self._accumulate_daily(daily, result)
             simulated_soc_records.append({"time": timestamp, "value": result.soc_pct})
+            simulated_interval_records.append(
+                {
+                    "time": timestamp,
+                    "soc_pct": result.soc_pct,
+                    "grid_import_w": result.grid_import_kw * 1000,
+                    "grid_export_w": result.grid_export_kw * 1000,
+                }
+            )
 
         write_many = getattr(self.influx_handler, "write_fields_datapoints", None)
         if write_many is not None:
@@ -798,7 +984,7 @@ class BatteryScenarioRunner:
             state,
             daily,
         )
-        return simulated_soc_records, dict(daily)
+        return simulated_soc_records, dict(daily), simulated_interval_records
 
     def _pv_for_mode(self, values: Dict[str, float], pv_mode: str) -> float:
         total = 0.0
@@ -808,11 +994,13 @@ class BatteryScenarioRunner:
         return total
 
     @staticmethod
-    def _require_value(values: Dict[str, float], source_name: str) -> float:
+    def _require_value(
+        values: Dict[str, float], source_name: str, allow_negative: bool = False
+    ) -> float:
         if source_name not in values:
             raise ValueError(f"Missing held value for scenario source '{source_name}'")
         value = values[source_name]
-        if value < 0:
+        if value < 0 and not allow_negative:
             raise ValueError(f"Negative value for scenario source '{source_name}'")
         return value
 
@@ -840,13 +1028,13 @@ class BatteryScenarioRunner:
         actual_values = {
             "soc_pct": (result.soc_pct, "%"),
             "stored_energy": (result.stored_energy_kwh, "kWh"),
-            "house_load": (result.house_load_kw, "kW"),
-            "pv_generation": (result.pv_generation_kw, "kW"),
-            "pv_to_load": (result.pv_to_load_kw, "kW"),
-            "pv_to_battery": (result.pv_to_battery_kw, "kW"),
-            "battery_to_load": (result.battery_to_load_kw, "kW"),
-            "grid_import": (result.grid_import_kw, "kW"),
-            "grid_export": (result.grid_export_kw, "kW"),
+            "house_load": (result.house_load_kw * 1000, "W"),
+            "pv_generation": (result.pv_generation_kw * 1000, "W"),
+            "pv_to_load": (result.pv_to_load_kw * 1000, "W"),
+            "pv_to_battery": (result.pv_to_battery_kw * 1000, "W"),
+            "battery_to_load": (result.battery_to_load_kw * 1000, "W"),
+            "grid_import": (result.grid_import_kw * 1000, "W"),
+            "grid_export": (result.grid_export_kw * 1000, "W"),
         }
         return [
             {

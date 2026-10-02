@@ -4,7 +4,7 @@ import importlib
 import pytest
 
 
-def make_engine():
+def make_engine(charge_efficiency=1.0, discharge_efficiency=1.0):
     module = importlib.import_module("moduls.szenarios.battery_engine")
     config_module = importlib.import_module("moduls.szenarios.scenario_config")
     definition = config_module.ScenarioDefinitionWithSetup(
@@ -15,7 +15,13 @@ def make_engine():
         _base_charge_power_kw=5,
         _base_discharge_power_kw=5,
     )
-    return module.BatteryScenarioEngine(definition, min_soc_pct=0, max_soc_pct=100)
+    return module.BatteryScenarioEngine(
+        definition,
+        min_soc_pct=0,
+        max_soc_pct=100,
+        charge_efficiency=charge_efficiency,
+        discharge_efficiency=discharge_efficiency,
+    )
 
 
 def test_surplus_pv_charges_then_exports():
@@ -57,6 +63,32 @@ def test_soc_limit_prevents_overcharge():
     assert result.pv_to_battery_kw == pytest.approx(0.5)
     assert result.pv_export_kw == pytest.approx(9.5)
     assert result.soc_pct == pytest.approx(100)
+
+
+def test_charge_efficiency_reduces_stored_energy():
+    engine = make_engine(charge_efficiency=0.8)
+    state = engine.initial_state(0)
+
+    result = engine.simulate_interval(
+        state, datetime(2026, 1, 1), 3600, house_load_kw=0, pv_generation_kw=5
+    )
+
+    assert result.pv_to_battery_kw == pytest.approx(5)
+    assert result.stored_energy_kwh == pytest.approx(4)
+    assert result.pv_export_kw == pytest.approx(0)
+
+
+def test_discharge_efficiency_increases_removed_energy():
+    engine = make_engine(discharge_efficiency=0.8)
+    state = engine.initial_state(50)
+
+    result = engine.simulate_interval(
+        state, datetime(2026, 1, 1), 3600, house_load_kw=10, pv_generation_kw=0
+    )
+
+    assert result.battery_to_load_kw == pytest.approx(4)
+    assert result.grid_import_kw == pytest.approx(6)
+    assert result.stored_energy_kwh == pytest.approx(0)
 
 
 def test_negative_inputs_are_rejected():

@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 import importlib
 
 import pytz
+import pytest
 
 
 def minimal_config():
@@ -84,8 +85,8 @@ def test_runner_writes_timeseries_and_daily_points(fake_influx_module):
     assert timeseries["tags"]["pv_mode"] == "without_old_pv"
     assert timeseries["tags"]["version"] == "v1"
     assert timeseries["tags"]["entity_id"] == "pv_to_load"
-    assert timeseries["tags"]["unit"] == "kW"
-    assert timeseries["fields"] == {"actual": 1.0}
+    assert timeseries["tags"]["unit"] == "W"
+    assert timeseries["fields"] == {"actual": 1000.0}
     assert not {"run_reason", "run_version", "model_version", "record_type"} & timeseries["tags"].keys()
     daily_grid_import = next(
         write for write in handler.writes
@@ -117,6 +118,58 @@ def test_runner_writes_timeseries_and_daily_points(fake_influx_module):
     assert daily_soc["tags"]["unit"] == "%"
     entities = {write["tags"]["entity_id"] for write in handler.writes}
     assert not {"pv_export", "battery_charge_dc", "battery_discharge_dc", "battery_to_grid"} & entities
+
+
+def test_negative_raw_house_load_is_treated_as_additional_pv(fake_influx_module):
+    config_module = importlib.import_module("moduls.szenarios.scenario_config")
+    runner_module = importlib.import_module("moduls.szenarios.scenarios_processor")
+    config_data = minimal_config()
+    source = config_data["scenarios"]["sources"]["corrected_house_load"]
+    source.pop("version")
+    source["allow_negative"] = True
+    source["negative_as_pv"] = True
+    config = config_module.load_scenario_configuration(config_data)
+
+    class Handler:
+        def __init__(self):
+            self.writes = []
+
+        def get_scenario_daily_records(self, **kwargs):
+            return []
+
+        def get_latest_datapoint_by_time(self, **kwargs):
+            value = -1000 if kwargs["entity_id"] == "Hausverbrauch_korrigiert" else 0
+            return {"time": kwargs["stop_time"], "value": value}
+
+        def get_data(self, **kwargs):
+            value = -1000 if kwargs["entity_id"] == "Hausverbrauch_korrigiert" else 0
+            return [{"time": kwargs["start_time"], "value": value}]
+
+        def write_fields_datapoint(self, **kwargs):
+            self.writes.append(kwargs)
+
+    handler = Handler()
+    assert runner_module.BatteryScenarioRunner(
+        handler, config, date(2026, 1, 1)
+    ).process(last_day=date(2026, 1, 1)) == 1
+
+    grid_export = next(
+        write
+        for write in handler.writes
+        if write["tags"].get("entity_id") == "grid_export"
+        and "actual" in write["fields"]
+    )
+    assert grid_export["fields"]["actual"] == pytest.approx(791.6666667)
+
+
+def test_source_without_version_has_no_version_filter(fake_influx_module):
+    config_module = importlib.import_module("moduls.szenarios.scenario_config")
+    config_data = minimal_config()
+    config_data["scenarios"]["sources"]["corrected_house_load"].pop("version")
+
+    configuration = config_module.load_scenario_configuration(config_data)
+
+    assert configuration.sources["corrected_house_load"].version is None
 
 
 def test_runner_resumes_from_last_complete_day_after_restart(fake_influx_module):
@@ -353,6 +406,27 @@ def _quality_config(enabled=True, include_second_scenario=False):
     return config
 
 
+def test_daily_quality_is_written_only_for_current_battery_without_old_pv(fake_influx_module):
+    config_module = importlib.import_module("moduls.szenarios.scenario_config")
+    runner_module = importlib.import_module("moduls.szenarios.scenarios_processor")
+    config_data = _quality_config(enabled=True)
+    config_data["scenarios"]["pv_modes"]["with_old_pv"] = ["local_pv"]
+    config = config_module.load_scenario_configuration(config_data)
+    handler = DailyQualityHandler()
+
+    runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1)).process(
+        last_day=date(2026, 1, 1)
+    )
+
+    quality_writes = [write for write in handler.writes if "quality" in write["fields"]]
+    error_writes = [write for write in handler.writes if "error" in write["fields"]]
+    assert quality_writes
+    assert error_writes
+    assert {write["tags"]["scenario"] for write in quality_writes} == {"current_battery"}
+    assert {write["tags"]["pv_mode"] for write in quality_writes} == {"without_old_pv"}
+    assert {write["tags"]["pv_mode"] for write in error_writes} == {"without_old_pv"}
+
+
 class DailyQualityHandler:
     def __init__(self, missing_soc_start=False):
         self.writes = []
@@ -462,7 +536,7 @@ def test_daily_quality_disabled_does_not_read_or_write_quality(fake_influx_modul
     assert not [write for write in handler.writes if "quality" in write["fields"]]
 
 
-def test_daily_quality_skips_missing_midnight_state_but_keeps_simulation(
+def test_daily_quality_bootstraps_missing_midnight_state_but_keeps_simulation(
     fake_influx_module, caplog
 ):
     config_module = importlib.import_module("moduls.szenarios.scenario_config")
@@ -478,9 +552,10 @@ def test_daily_quality_skips_missing_midnight_state_but_keeps_simulation(
         write["tags"].get("entity_id") == "stored_energy" and "end" in write["fields"]
         for write in handler.writes
     )
-    assert not [write for write in handler.writes if "quality" in write["fields"]]
+    quality_writes = [write for write in handler.writes if "quality" in write["fields"]]
+    assert len(quality_writes) == 3
     assert any(
         "battery_soc" in record.getMessage()
-        and "no valid value at local midnight" in record.getMessage()
+        and "Bootstrapping daily quality source" in record.getMessage()
         for record in caplog.records
     )

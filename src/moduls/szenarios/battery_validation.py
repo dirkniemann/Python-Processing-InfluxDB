@@ -34,12 +34,24 @@ class SimulationComparisonReport:
 class DailySimulationQuality:
     """Daily current-battery errors against measured SOC and grid power."""
 
-    soc_mae_pct: float
-    soc_signed_error_pct: float
-    grid_import_quality_kwh: float
-    grid_import_signed_error_kwh: float
-    grid_export_quality_kwh: float
-    grid_export_signed_error_kwh: float
+    soc_mae_pct: Optional[float]
+    soc_signed_error_pct: Optional[float]
+    grid_import_quality_kwh: Optional[float]
+    grid_import_signed_error_kwh: Optional[float]
+    grid_export_quality_kwh: Optional[float]
+    grid_export_signed_error_kwh: Optional[float]
+
+
+@dataclass(frozen=True)
+class DailyBatteryEfficiency:
+    charge_efficiency: Optional[float]
+    discharge_efficiency: Optional[float]
+    charge_energy_kwh: float
+    discharge_energy_kwh: float
+    stored_energy_kwh: float
+    removed_energy_kwh: float
+    valid_charge_phases: int
+    valid_discharge_phases: int
 
 
 def calculate_daily_simulation_quality(
@@ -70,61 +82,255 @@ def calculate_daily_simulation_quality(
     simulated_soc_series = _daily_series(simulated_soc, start, stop)
     measured_soc_series = _daily_series(measured_soc, start, stop)
     grid_series = _daily_series(grid_power, start, stop)
-    if simulated_soc_series is None or measured_soc_series is None or grid_series is None:
+    if simulated_soc_series is None and grid_series is None:
         return None
-    if any(not 0 <= value <= 100 for _, value in simulated_soc_series + measured_soc_series):
-        return None
+    if measured_soc_series is not None and any(
+        not 0 <= value <= 100 for _, value in measured_soc_series
+    ):
+        measured_soc_series = None
 
     duration_s = (stop - start).total_seconds()
-    absolute_soc_error = signed_soc_error = 0.0
-    timeline = sorted(
-        {start, stop}
-        | {timestamp for timestamp, _ in simulated_soc_series}
-        | {timestamp for timestamp, _ in measured_soc_series}
-    )
-    simulated_index = measured_index = 0
-    simulated_soc_value = measured_soc_value = None
-    for timestamp, next_timestamp in zip(timeline, timeline[1:]):
-        while (
-            simulated_index < len(simulated_soc_series)
-            and simulated_soc_series[simulated_index][0] <= timestamp
+    absolute_soc_error = signed_soc_error = soc_duration_s = 0.0
+    if simulated_soc_series is not None and measured_soc_series is not None:
+        for interval_start, interval_stop, simulated_value, measured_value in _quality_intervals(
+            simulated_soc_series, measured_soc_series, start, stop
         ):
-            simulated_soc_value = simulated_soc_series[simulated_index][1]
-            simulated_index += 1
-        while (
-            measured_index < len(measured_soc_series)
-            and measured_soc_series[measured_index][0] <= timestamp
-        ):
-            measured_soc_value = measured_soc_series[measured_index][1]
-            measured_index += 1
-        if simulated_soc_value is None or measured_soc_value is None:
-            return None
-        elapsed_s = (next_timestamp - timestamp).total_seconds()
-        error = simulated_soc_value - measured_soc_value
-        absolute_soc_error += abs(error) * elapsed_s
-        signed_soc_error += error * elapsed_s
+            elapsed_s = (interval_stop - interval_start).total_seconds()
+            error = simulated_value - measured_value
+            absolute_soc_error += abs(error) * elapsed_s
+            signed_soc_error += error * elapsed_s
+            soc_duration_s += elapsed_s
 
-    measured_import_kwh, measured_export_kwh = _integrate_grid_power(grid_series, start, stop)
-    import_signed_error = float(simulated_grid_import_kwh) - measured_import_kwh
-    export_signed_error = float(simulated_grid_export_kwh) - measured_export_kwh
+    measured_import_kwh = measured_export_kwh = 0.0
+    import_signed_error = export_signed_error = None
+    if grid_series is not None:
+        measured_import_kwh, measured_export_kwh = _integrate_grid_power(
+            grid_series, start, stop
+        )
+        import_signed_error = float(simulated_grid_import_kwh) - measured_import_kwh
+        export_signed_error = float(simulated_grid_export_kwh) - measured_export_kwh
     return DailySimulationQuality(
-        soc_mae_pct=absolute_soc_error / duration_s,
-        soc_signed_error_pct=signed_soc_error / duration_s,
-        grid_import_quality_kwh=abs(import_signed_error),
+        soc_mae_pct=(absolute_soc_error / soc_duration_s if soc_duration_s else None),
+        soc_signed_error_pct=(signed_soc_error / soc_duration_s if soc_duration_s else None),
+        grid_import_quality_kwh=(abs(import_signed_error) if import_signed_error is not None else None),
         grid_import_signed_error_kwh=import_signed_error,
-        grid_export_quality_kwh=abs(export_signed_error),
+        grid_export_quality_kwh=(abs(export_signed_error) if export_signed_error is not None else None),
         grid_export_signed_error_kwh=export_signed_error,
     )
+
+
+def calculate_timeseries_simulation_errors(
+    simulated_records: List[Dict[str, Any]],
+    measured_soc_records: List[Dict[str, Any]],
+    measured_grid_power_records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return signed simulation-minus-reality errors at simulation timestamps.
+
+    SOC errors are percentage points. Grid import and export errors are watts.
+    All measured inputs use sample-and-hold semantics; when no earlier sample
+    exists, the first valid measured sample is used as the bootstrap value.
+    """
+    measured_soc = _normalise(measured_soc_records)
+    measured_grid = _normalise(measured_grid_power_records)
+    errors = []
+    for simulated in sorted(
+        (record for record in simulated_records if isinstance(record.get("time"), datetime)),
+        key=lambda record: record["time"],
+    ):
+        timestamp = simulated["time"]
+        soc_value = _held_value(measured_soc, timestamp)
+        grid_value = _held_value(measured_grid, timestamp)
+        if soc_value is None or grid_value is None:
+            continue
+        if not 0 <= soc_value <= 100:
+            continue
+        errors.append(
+            {
+                "time": timestamp,
+                "soc_pct": float(simulated["soc_pct"]) - soc_value,
+                "grid_import_w": float(simulated["grid_import_w"])
+                - max(grid_value, 0.0),
+                "grid_export_w": float(simulated["grid_export_w"])
+                - max(-grid_value, 0.0),
+            }
+        )
+    return errors
+
+
+def _quality_intervals(
+    simulated: List[tuple[datetime, float]],
+    measured: List[tuple[datetime, float]],
+    start: datetime,
+    stop: datetime,
+    simulation_change_tolerance_pct: float = 0.5,
+) -> List[tuple[datetime, datetime, float, float]]:
+    """Return intervals where a held real SOC remains plausible for the simulation."""
+    timeline = sorted(
+        {start, stop}
+        | {timestamp for timestamp, _ in simulated}
+        | {timestamp for timestamp, _ in measured}
+    )
+    result = []
+    simulated_index = measured_index = 0
+    simulated_value = measured_value = None
+    simulated_at_measurement = None
+    for interval_start, interval_stop in zip(timeline, timeline[1:]):
+        while simulated_index < len(simulated) and simulated[simulated_index][0] <= interval_start:
+            simulated_value = simulated[simulated_index][1]
+            simulated_index += 1
+        while measured_index < len(measured) and measured[measured_index][0] <= interval_start:
+            measured_value = measured[measured_index][1]
+            simulated_at_measurement = simulated_value
+            measured_index += 1
+        if simulated_value is None or measured_value is None:
+            continue
+        if simulated_at_measurement is None or abs(simulated_value - simulated_at_measurement) <= simulation_change_tolerance_pct:
+            result.append((interval_start, interval_stop, simulated_value, measured_value))
+    return result
+
+
+def calculate_daily_battery_efficiency(
+    power_records: List[Dict[str, Any]],
+    soc_records: List[Dict[str, Any]],
+    capacity_kwh: float,
+    start: datetime,
+    stop: datetime,
+    max_gap_s: float = 15 * 60,
+    soc_tolerance_pct: float = 0.5,
+) -> DailyBatteryEfficiency:
+    """Calculate valid charge/discharge efficiencies for one local calendar day."""
+    power = _normalise(power_records)
+    soc = _normalise(soc_records)
+    if capacity_kwh <= 0 or stop <= start:
+        return _empty_efficiency()
+
+    day_power = [item for item in power if start <= item["time"] < stop]
+    phases = _power_phases(day_power, stop, max_gap_s)
+    charge = []
+    discharge = []
+    for phase_start, phase_stop, phase_direction, phase_energy_kwh in phases:
+        result = _calculate_phase_efficiency(
+            phase_start,
+            phase_stop,
+            phase_direction,
+            phase_energy_kwh,
+            soc,
+            capacity_kwh,
+            max_gap_s,
+            soc_tolerance_pct,
+        )
+        if result is None:
+            continue
+        if phase_direction < 0:
+            charge.append(result)
+        else:
+            discharge.append(result)
+
+    charge_ac = sum(item[0] for item in charge)
+    stored = sum(item[1] for item in charge)
+    discharge_ac = sum(item[0] for item in discharge)
+    removed = sum(item[1] for item in discharge)
+    return DailyBatteryEfficiency(
+        charge_efficiency=_plausible_efficiency(stored / charge_ac if charge_ac else None),
+        discharge_efficiency=_plausible_efficiency(discharge_ac / removed if removed else None),
+        charge_energy_kwh=charge_ac,
+        discharge_energy_kwh=discharge_ac,
+        stored_energy_kwh=stored,
+        removed_energy_kwh=removed,
+        valid_charge_phases=len(charge),
+        valid_discharge_phases=len(discharge),
+    )
+
+
+def _power_phases(
+    records: List[Dict[str, Any]], stop: datetime, max_gap_s: float
+) -> List[tuple[datetime, datetime, int, float]]:
+    phases = []
+    current = None
+    for record, next_record in zip(records, records[1:] + [{"time": stop, "value": 0.0}]):
+        value = record["value"]
+        if value == 0 or next_record["time"] <= record["time"]:
+            if current is not None:
+                phases.append(current)
+                current = None
+            continue
+        phase_stop = next_record["time"]
+        if (phase_stop - record["time"]).total_seconds() > max_gap_s:
+            if current is not None:
+                phases.append(current)
+                current = None
+            continue
+        sign = -1 if value < 0 else 1
+        if current is None or sign != current[2]:
+            if current is not None:
+                phases.append(current)
+            current = [record["time"], phase_stop, sign, 0.0]
+        else:
+            current[1] = phase_stop
+        current[3] += abs(value) / 1000 * (phase_stop - record["time"]).total_seconds() / 3600
+    if current is not None:
+        phases.append(current)
+    return [(item[0], item[1], item[2], item[3]) for item in phases]
+
+
+def _calculate_phase_efficiency(
+    start: datetime,
+    stop: datetime,
+    direction: int,
+    ac_energy_kwh: float,
+    soc_records: List[Dict[str, Any]],
+    capacity_kwh: float,
+    max_gap_s: float,
+    tolerance_pct: float,
+) -> Optional[tuple[float, float]]:
+    if stop <= start:
+        return None
+    relevant = [item for item in soc_records if start <= item["time"] <= stop]
+    if not relevant or relevant[0]["time"] != start or relevant[-1]["time"] != stop:
+        return None
+    if any(
+        (next_item["time"] - item["time"]).total_seconds() > max_gap_s
+        for item, next_item in zip(relevant, relevant[1:])
+    ):
+        return None
+    deltas = [next_item["value"] - item["value"] for item, next_item in zip(relevant, relevant[1:])]
+    counter_moves = [delta for delta in deltas if (direction < 0 and delta < -tolerance_pct) or (direction > 0 and delta > tolerance_pct)]
+    if counter_moves or not deltas:
+        return None
+    delta_soc = relevant[-1]["value"] - relevant[0]["value"]
+    if (direction < 0 and delta_soc <= tolerance_pct) or (direction > 0 and delta_soc >= -tolerance_pct):
+        return None
+    return ac_energy_kwh, abs(delta_soc) / 100 * capacity_kwh
+
+
+def _plausible_efficiency(value: Optional[float]) -> Optional[float]:
+    return value if value is not None and math.isfinite(value) and 0.5 <= value <= 1.25 else None
+
+
+def _empty_efficiency() -> DailyBatteryEfficiency:
+    return DailyBatteryEfficiency(None, None, 0.0, 0.0, 0.0, 0.0, 0, 0)
+
+
+def _held_value(records: List[Dict[str, Any]], timestamp: datetime) -> Optional[float]:
+    previous = [record for record in records if record["time"] <= timestamp]
+    return previous[-1]["value"] if previous else None
 
 
 def _daily_series(
     records: List[Dict[str, Any]], start: datetime, stop: datetime
 ) -> Optional[List[tuple[datetime, float]]]:
-    """Keep the latest state at the window start and in-window changes."""
+    """Keep a held state at the window start and in-window changes.
+
+    When no historical value exists, the first valid in-window sample is used
+    as the bootstrap value for the start of the window.
+    """
     previous = [record for record in records if record["time"] <= start]
-    if not previous:
+    start_record = previous[-1] if previous else next(
+        (record for record in records if start <= record["time"] < stop),
+        None,
+    )
+    if start_record is None:
         return None
-    start_record = previous[-1]
     by_time: Dict[datetime, float] = {start: start_record["value"]}
     for record in records:
         timestamp = record["time"]

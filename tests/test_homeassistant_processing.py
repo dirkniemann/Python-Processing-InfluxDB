@@ -142,3 +142,43 @@ def test_get_days_to_process_uses_dates(fake_influx_module):
     assert isinstance(days, list)
     assert all(isinstance(day, date) for day in days)
     assert not days, "Yesterday should produce no days to process"
+
+
+def test_get_days_to_process_uses_berlin_calendar_day(fake_influx_module):
+    processing_module = importlib.import_module("moduls.processing.HomeAssistant_processing")
+    importlib.reload(processing_module)
+
+    class BerlinAwareDateTime:
+        @classmethod
+        def now(cls, timezone=None):
+            assert timezone is processing_module.LOCAL_TZ
+            return timezone.localize(datetime(2026, 1, 2, 0, 30))
+
+    original_datetime = processing_module.datetime
+    processing_module.datetime = BerlinAwareDateTime
+    try:
+        assert processing_module.get_days_to_process(date(2025, 12, 31)) == [
+            date(2026, 1, 1)
+        ]
+    finally:
+        processing_module.datetime = original_datetime
+
+
+def test_shared_processor_day_helper_uses_berlin_calendar_day(fake_influx_module):
+    processor_module = importlib.import_module("moduls.processing.HomeAssistant_processor")
+    importlib.reload(processor_module)
+
+    class BerlinAwareDateTime:
+        @classmethod
+        def now(cls, timezone=None):
+            assert timezone is processor_module.LOCAL_TZ
+            return timezone.localize(datetime(2026, 1, 2, 0, 30))
+
+    original_datetime = processor_module.datetime
+    processor_module.datetime = BerlinAwareDateTime
+    try:
+        assert processor_module.get_days_to_process(date(2025, 12, 31)) == [
+            date(2026, 1, 1)
+        ]
+    finally:
+        processor_module.datetime = original_datetime

@@ -30,10 +30,21 @@ class IntervalResult:
 class BatteryScenarioEngine:
     """Idealized V1 self-consumption battery model."""
 
-    def __init__(self, definition: ScenarioDefinitionWithSetup, min_soc_pct: float, max_soc_pct: float):
+    def __init__(
+        self,
+        definition: ScenarioDefinitionWithSetup,
+        min_soc_pct: float,
+        max_soc_pct: float,
+        charge_efficiency: float = 1.0,
+        discharge_efficiency: float = 1.0,
+    ):
         self.definition = definition
         self.min_soc_pct = min_soc_pct
         self.max_soc_pct = max_soc_pct
+        if not 0 < charge_efficiency <= 1 or not 0 < discharge_efficiency <= 1:
+            raise ValueError("battery efficiencies must be greater than 0 and at most 1")
+        self.charge_efficiency = charge_efficiency
+        self.discharge_efficiency = discharge_efficiency
         self.min_energy_kwh = definition.capacity_kwh * min_soc_pct / 100
         self.max_energy_kwh = definition.capacity_kwh * max_soc_pct / 100
 
@@ -65,15 +76,23 @@ class BatteryScenarioEngine:
         charge_limit_kw = min(
             surplus_kw,
             self.definition.charge_power_kw,
-            max(0.0, self.max_energy_kwh - state.stored_energy_kwh) / interval_hours,
+            max(0.0, self.max_energy_kwh - state.stored_energy_kwh)
+            / self.charge_efficiency
+            / interval_hours,
         )
-        state.stored_energy_kwh += charge_limit_kw * interval_hours
+        state.stored_energy_kwh += (
+            charge_limit_kw * interval_hours * self.charge_efficiency
+        )
         discharge_limit_kw = min(
             deficit_kw,
             self.definition.discharge_power_kw,
-            max(0.0, state.stored_energy_kwh - self.min_energy_kwh) / interval_hours,
+            max(0.0, state.stored_energy_kwh - self.min_energy_kwh)
+            * self.discharge_efficiency
+            / interval_hours,
         )
-        state.stored_energy_kwh -= discharge_limit_kw * interval_hours
+        state.stored_energy_kwh -= (
+            discharge_limit_kw * interval_hours / self.discharge_efficiency
+        )
         state.stored_energy_kwh = min(
             self.max_energy_kwh,
             max(self.min_energy_kwh, state.stored_energy_kwh),
