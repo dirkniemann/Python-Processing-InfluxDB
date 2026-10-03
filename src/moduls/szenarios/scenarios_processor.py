@@ -52,6 +52,10 @@ class BatteryScenarioRunner:
         self.last_complete_date: Optional[date] = None
         self.quality_valid_points = 0
         self.quality_skipped_points = 0
+        self.efficiency_charge_days = 0
+        self.efficiency_discharge_days = 0
+        self.efficiency_charge_energy_kwh = 0.0
+        self.efficiency_discharge_energy_kwh = 0.0
 
     def process(self, last_day: Optional[date] = None) -> int:
         if not self.configuration.definitions:
@@ -151,8 +155,8 @@ class BatteryScenarioRunner:
 
         for day_index in range(total_days):
             day = first_day + timedelta(days=day_index)
-            quality_inputs_attempted = False
-            quality_inputs = None
+            analysis_inputs_attempted = False
+            analysis_inputs = None
             active = [
                 combo
                 for combo in combinations
@@ -210,64 +214,71 @@ class BatteryScenarioRunner:
                         input_day,
                     )
                     if (
-                        self.configuration.daily_quality_enabled
+                        (self.configuration.daily_quality_enabled or self.configuration.efficiency_enabled)
                         and combo["name"] == "current_battery"
                         and combo["pv_mode"] == "without_old_pv"
                     ):
-                        if not quality_inputs_attempted:
-                            quality_inputs_attempted = True
+                        if not analysis_inputs_attempted:
+                            analysis_inputs_attempted = True
                             try:
-                                quality_inputs = self._load_daily_quality_inputs(day)
+                                analysis_inputs = self._load_daily_analysis_inputs(day)
                             except Exception:
                                 logger.warning(
-                                    "Could not load real daily quality inputs for %s; "
+                                    "Could not load real daily analysis inputs for %s; "
                                     "current-battery simulation remains complete",
                                     day,
                                     exc_info=True,
                                 )
-                        if quality_inputs is not None:
+                        if analysis_inputs is not None:
                             try:
                                 start = local_to_utc(datetime.combine(day, time.min))
                                 stop = local_to_utc(
                                     datetime.combine(day + timedelta(days=1), time.min)
                                 )
-                                quality = calculate_daily_simulation_quality(
-                                    simulated_soc_records=simulated_soc_records,
-                                    measured_soc_records=quality_inputs["battery_soc"],
-                                    measured_grid_power_records=quality_inputs["grid_power"],
-                                    simulated_grid_import_kwh=simulated_daily.get(
-                                        "grid_import_kwh", 0.0
-                                    ),
-                                    simulated_grid_export_kwh=simulated_daily.get(
-                                        "grid_export_kwh", 0.0
-                                    ),
-                                    start=start,
-                                    stop=stop,
-                                )
-                                if quality is None:
-                                    self.quality_skipped_points += 3
-                                    logger.warning(
-                                        "Skipping daily quality for current_battery/%s on %s; "
-                                        "real and simulated values do not cover the full day",
-                                        combo["pv_mode"],
-                                        day,
+                                if self.configuration.daily_quality_enabled:
+                                    quality = calculate_daily_simulation_quality(
+                                        simulated_soc_records=simulated_soc_records,
+                                        measured_soc_records=analysis_inputs["battery_soc"],
+                                        measured_grid_power_records=analysis_inputs["grid_power"],
+                                        simulated_grid_import_kwh=simulated_daily.get(
+                                            "grid_import_kwh", 0.0
+                                        ),
+                                        simulated_grid_export_kwh=simulated_daily.get(
+                                            "grid_export_kwh", 0.0
+                                        ),
+                                        start=start,
+                                        stop=stop,
                                     )
-                                else:
-                                    self._record_quality_stats(quality)
-                                    timestamp = local_to_utc(
-                                        datetime.combine(
-                                            day, time(hour=23, minute=59, second=59)
+                                    if quality is None:
+                                        self.quality_skipped_points += 3
+                                        logger.warning(
+                                            "Skipping daily quality for current_battery/%s on %s; "
+                                            "real and simulated values do not cover the full day",
+                                            combo["pv_mode"],
+                                            day,
                                         )
+                                    else:
+                                        self._record_quality_stats(quality)
+                                        timestamp = local_to_utc(
+                                            datetime.combine(
+                                                day, time(hour=23, minute=59, second=59)
+                                            )
+                                        )
+                                        self._write_daily_quality(
+                                            combo["pv_mode"], timestamp, quality
+                                        )
+                                    errors = calculate_timeseries_simulation_errors(
+                                        simulated_records=simulated_interval_records,
+                                        measured_soc_records=analysis_inputs["battery_soc"],
+                                        measured_grid_power_records=analysis_inputs["grid_power"],
                                     )
-                                    self._write_daily_quality(
-                                        combo["pv_mode"], timestamp, quality
+                                    self._write_timeseries_errors(combo["pv_mode"], errors)
+                                if self.configuration.efficiency_enabled:
+                                    self._process_daily_efficiency(
+                                        day,
+                                        analysis_inputs["battery_power"],
+                                        analysis_inputs["battery_soc"],
                                     )
-                                errors = calculate_timeseries_simulation_errors(
-                                    simulated_records=simulated_interval_records,
-                                    measured_soc_records=quality_inputs["battery_soc"],
-                                    measured_grid_power_records=quality_inputs["grid_power"],
-                                )
-                                self._write_timeseries_errors(combo["pv_mode"], errors)
                             except Exception:
                                 logger.warning(
                                     "Could not calculate or write daily quality for "
@@ -316,6 +327,14 @@ class BatteryScenarioRunner:
             self.quality_valid_points,
             self.quality_skipped_points,
             100 * self.quality_valid_points / quality_total if quality_total else 0.0,
+        )
+        logger.info(
+            "Efficiency summary: charge valid days=%d total energy=%.3f kWh; "
+            "discharge valid days=%d total energy=%.3f kWh",
+            self.efficiency_charge_days,
+            self.efficiency_charge_energy_kwh,
+            self.efficiency_discharge_days,
+            self.efficiency_discharge_energy_kwh,
         )
         return processed_days
 
@@ -437,6 +456,49 @@ class BatteryScenarioRunner:
             (total_discharge_energy / total_removed_energy if total_removed_energy else None),
         )
 
+    def _process_daily_efficiency(
+        self,
+        day: date,
+        power_records: List[Dict[str, Any]],
+        soc_records: List[Dict[str, Any]],
+    ) -> None:
+        start = local_to_utc(datetime.combine(day, time.min))
+        stop = local_to_utc(datetime.combine(day + timedelta(days=1), time.min))
+        daily = calculate_daily_battery_efficiency(
+            power_records=power_records,
+            soc_records=soc_records,
+            capacity_kwh=22.4,
+            start=start,
+            stop=stop,
+        )
+        timestamp = local_to_utc(
+            datetime.combine(day, time(hour=23, minute=59, second=59))
+        )
+        points = []
+        if daily.charge_efficiency is not None:
+            self.efficiency_charge_days += 1
+            self.efficiency_charge_energy_kwh += daily.charge_energy_kwh
+            points.append(
+                {
+                    "fields": {"daily_value": daily.charge_efficiency},
+                    "tags": self._tags("current_battery", "without_old_pv", "eta_charge", "ratio"),
+                    "timestamp": timestamp,
+                }
+            )
+        if daily.discharge_efficiency is not None:
+            self.efficiency_discharge_days += 1
+            self.efficiency_discharge_energy_kwh += daily.discharge_energy_kwh
+            points.append(
+                {
+                    "fields": {"daily_value": daily.discharge_efficiency},
+                    "tags": self._tags("current_battery", "without_old_pv", "eta_discharge", "ratio"),
+                    "timestamp": timestamp,
+                }
+            )
+        self._write_points(points)
+        if not points:
+            logger.debug("Skipping battery efficiency for %s: no valid phase", day)
+
     def _write_points(self, points: List[Dict[str, Any]]) -> None:
         if not points:
             return
@@ -466,39 +528,49 @@ class BatteryScenarioRunner:
             raise ValueError(f"PV mode {pv_mode} references unknown sources: {sorted(missing)}")
         return required
 
-    def _load_daily_quality_inputs(
+    def _load_daily_analysis_inputs(
         self, day: date
     ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
-        """Read actual SOC and grid power only after current_battery ran this day."""
-        soc_source = self.configuration.validation_sources.get("battery_soc")
-        grid_source = self.configuration.quality_grid_power_source
-        if soc_source is None or grid_source is None:
-            logger.warning(
-                "Daily quality is enabled but its SOC or grid-power source is unavailable"
-            )
-            return None
+        """Read real analysis sources once after current_battery ran this day."""
+        sources = {}
+        if self.configuration.daily_quality_enabled or self.configuration.efficiency_enabled:
+            soc_source = self.configuration.validation_sources.get("battery_soc")
+            if soc_source is None:
+                logger.warning("Daily analysis has no configured battery SOC source")
+                return None
+            sources["battery_soc"] = soc_source
+        if self.configuration.daily_quality_enabled:
+            grid_source = self.configuration.quality_grid_power_source
+            if grid_source is None:
+                logger.warning("Daily quality has no configured grid-power source")
+                return None
+            sources["grid_power"] = grid_source
+        if self.configuration.efficiency_enabled:
+            power_source = self.configuration.validation_sources.get("battery_power")
+            if power_source is None:
+                logger.warning("Battery efficiency has no configured battery-power source")
+                return None
+            sources["battery_power"] = power_source
 
         start = local_to_utc(datetime.combine(day, time.min))
         stop = local_to_utc(datetime.combine(day + timedelta(days=1), time.min))
-        soc_records = self._load_quality_source_day(soc_source, day, start, stop)
-        grid_records = self._load_quality_source_day(grid_source, day, start, stop)
+        query_stop = stop + timedelta(minutes=15) if self.configuration.efficiency_enabled else stop
+        records = {
+            name: self._load_quality_source_day(source, day, start, stop, query_stop)
+            for name, source in sources.items()
+        }
         missing_sources = [
-            source.name
-            for source, records in (
-                (soc_source, soc_records),
-                (grid_source, grid_records),
-            )
-            if records is None
+            name for name, source_records in records.items() if source_records is None
         ]
         if missing_sources:
             logger.warning(
-                "Skipping daily quality for %s; no valid local-midnight state "
+                "Skipping daily analysis for %s; no valid local-midnight state "
                 "for source(s): %s",
                 day,
                 ", ".join(missing_sources),
             )
             return None
-        return {"battery_soc": soc_records, "grid_power": grid_records}
+        return records
 
     def _load_quality_source_day(
         self,
@@ -506,7 +578,9 @@ class BatteryScenarioRunner:
         day: date,
         start: datetime,
         stop: datetime,
+        query_stop: Optional[datetime] = None,
     ) -> Optional[List[Dict[str, Any]]]:
+        query_stop = query_stop or stop
         history_start = LOCAL_TZ.localize(datetime(1970, 1, 1))
         previous = self.influx_handler.get_latest_datapoint_by_time(
             start_time=history_start,
@@ -519,7 +593,7 @@ class BatteryScenarioRunner:
         )
         raw_records = self.influx_handler.get_data(
             start_time=start,
-            stop_time=stop,
+            stop_time=query_stop,
             bucket=source.bucket,
             entity_id=source.entity_id,
             field=source.field,
@@ -535,7 +609,7 @@ class BatteryScenarioRunner:
             if (
                 not isinstance(timestamp, datetime)
                 or timestamp.tzinfo is None
-                or not start <= timestamp < stop
+                or not start <= timestamp < query_stop
                 or value is None
                 or (source.name == "battery_soc" and not 0 <= value <= 100)
             ):
