@@ -97,3 +97,33 @@ def test_negative_inputs_are_rejected():
         engine.simulate_interval(
             engine.initial_state(50), datetime(2026, 1, 1), 3600, -1, 0
         )
+
+
+def test_zero_capacity_reference_has_no_battery_flows():
+    module = importlib.import_module("moduls.szenarios.battery_engine")
+    config_module = importlib.import_module("moduls.szenarios.scenario_config")
+    definition = config_module.ScenarioDefinitionWithSetup(
+        name="without_battery",
+        extra_capacity_kwh=0,
+        extra_power_kw=0,
+        battery_enabled=False,
+        _base_capacity_kwh=10,
+        _base_charge_power_kw=5,
+        _base_discharge_power_kw=5,
+    )
+    engine = module.BatteryScenarioEngine(definition, min_soc_pct=5, max_soc_pct=100)
+
+    result = engine.simulate_interval(
+        engine.initial_state(5),
+        datetime(2026, 1, 1),
+        3600,
+        house_load_kw=2,
+        pv_generation_kw=10,
+    )
+
+    assert definition.capacity_kwh == 0
+    assert result.soc_pct == 0
+    assert result.pv_to_battery_kw == 0
+    assert result.battery_to_load_kw == 0
+    assert result.grid_import_kw == 0
+    assert result.grid_export_kw == 8

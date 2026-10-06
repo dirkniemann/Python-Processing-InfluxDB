@@ -1190,8 +1190,16 @@ class BatteryScenarioRunner:
             [
                 {
                     "fields": {
-                        "start": start_energy / definition.capacity_kwh * 100,
-                        "end": state.stored_energy_kwh / definition.capacity_kwh * 100,
+                        "start": (
+                            start_energy / definition.capacity_kwh * 100
+                            if definition.capacity_kwh > 0
+                            else 0.0
+                        ),
+                        "end": (
+                            state.stored_energy_kwh / definition.capacity_kwh * 100
+                            if definition.capacity_kwh > 0
+                            else 0.0
+                        ),
                     },
                     "tags": self._tags(scenario_name, pv_mode, "soc_pct", "%"),
                     "timestamp": timestamp,

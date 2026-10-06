@@ -20,17 +20,24 @@ class ScenarioDefinition:
     name: str
     extra_capacity_kwh: float
     extra_power_kw: float
+    battery_enabled: bool = True
 
     @property
     def capacity_kwh(self) -> float:
+        if not self.battery_enabled:
+            return 0.0
         return self._base_capacity_kwh + self.extra_capacity_kwh
 
     @property
     def charge_power_kw(self) -> float:
+        if not self.battery_enabled:
+            return 0.0
         return self._base_charge_power_kw + self.extra_power_kw
 
     @property
     def discharge_power_kw(self) -> float:
+        if not self.battery_enabled:
+            return 0.0
         return self._base_discharge_power_kw + self.extra_power_kw
 
     def with_base(self, setup: BatterySetup) -> "ScenarioDefinition":
@@ -38,6 +45,7 @@ class ScenarioDefinition:
             name=self.name,
             extra_capacity_kwh=self.extra_capacity_kwh,
             extra_power_kw=self.extra_power_kw,
+            battery_enabled=self.battery_enabled,
             _base_capacity_kwh=setup.base_capacity_kwh,
             _base_charge_power_kw=setup.base_charge_power_kw,
             _base_discharge_power_kw=setup.base_discharge_power_kw,
@@ -171,10 +179,14 @@ def load_scenario_configuration(config: Dict[str, Any]) -> ScenarioConfiguration
             continue
         extra_capacity = _nonnegative_number(definition, "extra_capacity_kwh")
         extra_power = _nonnegative_number(definition, "extra_power_kw")
+        battery_enabled = definition.get("battery_enabled", True)
+        if not isinstance(battery_enabled, bool):
+            raise ValueError(f"scenarios.definitions.{name}.battery_enabled must be boolean")
         definitions[name] = ScenarioDefinitionWithSetup(
             name=name,
             extra_capacity_kwh=extra_capacity,
             extra_power_kw=extra_power,
+            battery_enabled=battery_enabled,
             _base_capacity_kwh=setup.base_capacity_kwh,
             _base_charge_power_kw=setup.base_charge_power_kw,
             _base_discharge_power_kw=setup.base_discharge_power_kw,
