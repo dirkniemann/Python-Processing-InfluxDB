@@ -635,6 +635,7 @@ class InfluxDBHandler:
         bucket: str,
         version: str,
         scenario: Optional[str] = None,
+        pv_mode: Optional[str] = None,
         entity_id: Optional[str] = None,
         measurement: Optional[str] = None,
         field: Optional[str] = None
@@ -646,6 +647,7 @@ class InfluxDBHandler:
             bucket: Bucket to check for last data point
             version: Version tag to filter by
             scenario: Optional scenario tag to filter by
+            pv_mode: Optional PV mode tag to filter by
             
         Returns:
             Datetime of the last day with data, or None if no data found
@@ -664,6 +666,7 @@ class InfluxDBHandler:
         try:
             # Build filter for scenario if provided
             scenario_filter = f'|> filter(fn: (r) => r["scenario"] == "{scenario}")' if scenario else ""
+            pv_mode_filter = f'|> filter(fn: (r) => r["pv_mode"] == "{pv_mode}")' if pv_mode else ""
             entity_filter = f'|> filter(fn: (r) => r["entity_id"] == "{entity_id}")' if entity_id else ""
             measurement_filter = f'|> filter(fn: (r) => r["_measurement"] == "{measurement}")' if measurement else ""
             field_filter = f'|> filter(fn: (r) => r["_field"] == "{field}")' if field else ""
@@ -673,6 +676,7 @@ class InfluxDBHandler:
                 |> range(start: 0)
                 |> filter(fn: (r) => r["version"] == "{version}")
                 {scenario_filter}
+                {pv_mode_filter}
                 {entity_filter}
                 {measurement_filter}
                 {field_filter}
@@ -966,4 +970,3 @@ class InfluxDBHandler:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Close connection when leaving a context manager scope."""
         self.disconnect()
-

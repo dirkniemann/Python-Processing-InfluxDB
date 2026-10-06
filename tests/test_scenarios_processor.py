@@ -273,6 +273,37 @@ def test_runner_uses_configured_version_as_the_reprocessing_boundary(fake_influx
     assert all(record["version"] == "v2" for record in version_two_records)
 
 
+def test_runner_uses_last_stored_day_per_scenario_and_pv_mode(fake_influx_module):
+    config_module = importlib.import_module("moduls.szenarios.scenario_config")
+    runner_module = importlib.import_module("moduls.szenarios.scenarios_processor")
+    config = config_module.load_scenario_configuration(minimal_config())
+    calls = []
+
+    class Handler:
+        def get_last_data_day(self, **kwargs):
+            calls.append(kwargs)
+            return date(2026, 1, 2)
+
+        def get_scenario_daily_records(self, **kwargs):
+            return []
+
+    handler = Handler()
+    runner = runner_module.BatteryScenarioRunner(handler, config, date(2026, 1, 1))
+
+    assert runner.process(last_day=date(2026, 1, 2)) == 0
+    assert calls == [
+        {
+            "bucket": "testing",
+            "version": "v1",
+            "scenario": "current_battery",
+            "pv_mode": "without_old_pv",
+            "entity_id": "stored_energy",
+            "measurement": "batterie_szenarien",
+            "field": "end",
+        }
+    ]
+
+
 def test_runner_loads_each_source_once_per_day_for_all_scenarios(fake_influx_module):
     config_data = minimal_config()
     config_data["scenarios"]["sources"]["old_pv"] = {

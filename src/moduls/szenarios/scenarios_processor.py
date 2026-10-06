@@ -74,22 +74,30 @@ class BatteryScenarioRunner:
         for scenario_name, definition in self.configuration.definitions.items():
             for pv_mode in self.configuration.pv_modes:
                 required_sources = self._required_sources(pv_mode)
-                stored_records = [
-                    record
-                    for record in self._stored_daily_records(scenario_name, pv_mode)
-                    if record.get("version") == self.configuration.version
-                ]
+                # The handler already filters by version in InfluxDB. Its
+                # normalized records intentionally contain no tag columns.
+                stored_records = self._stored_daily_records(scenario_name, pv_mode)
                 stored_by_day = {
                     self._record_day(record): record
                     for record in stored_records
                     if self._record_day(record) is not None
                 }
-                start_day = self.first_data_day
+                last_stored_day = self._last_stored_day(
+                    scenario_name,
+                    pv_mode,
+                    stored_records,
+                )
+                start_day = (
+                    last_stored_day + timedelta(days=1)
+                    if last_stored_day is not None
+                    else self.first_data_day
+                )
                 while start_day <= available_end:
                     stored = stored_by_day.get(start_day)
-                    if stored is None or stored.get("stored_energy_end_kwh") is None:
-                        break
-                    start_day += timedelta(days=1)
+                    if stored is not None and stored.get("stored_energy_end_kwh") is not None:
+                        start_day += timedelta(days=1)
+                        continue
+                    break
 
                 if start_day > available_end:
                     logger.info(
@@ -911,6 +919,28 @@ class BatteryScenarioRunner:
             pv_mode=pv_mode,
             version=self.configuration.version,
         )
+
+    def _last_stored_day(
+        self,
+        scenario_name: str,
+        pv_mode: str,
+        stored_records: List[Dict[str, Any]],
+    ) -> Optional[date]:
+        """Return the last complete output day for one scenario/PV combination."""
+        method = getattr(self.influx_handler, "get_last_data_day", None)
+        if method is not None:
+            last_day = method(
+                bucket=self.output_bucket,
+                version=self.configuration.version,
+                scenario=scenario_name,
+                pv_mode=pv_mode,
+                entity_id="stored_energy",
+                measurement=BATTERY_SCENARIO_MEASUREMENT,
+                field="end",
+            )
+            if last_day is not None:
+                return last_day
+        return self._last_complete_day(stored_records)
 
     @staticmethod
     def _record_day(record: Dict[str, Any]) -> Optional[date]:
