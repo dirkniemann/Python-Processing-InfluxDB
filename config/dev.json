@@ -108,8 +108,8 @@
             "max_soc_pct": 100,
             "initial_soc_pct": 5,
             "loss_model": "idealized_no_additional_losses_v1",
-            "charge_efficiency": 1.0,
-            "discharge_efficiency": 1.0
+            "charge_efficiency": 0.94,
+            "discharge_efficiency": 0.94
         },
         "sources": {
             "corrected_house_load": {
