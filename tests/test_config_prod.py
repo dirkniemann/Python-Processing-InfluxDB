@@ -74,14 +74,12 @@ def test_all_scenarios_can_be_disabled_without_invalidating_config(prod_config):
     assert configuration.definitions == {}
 
 
-def test_daily_quality_configuration_is_explicit_and_resolves_grid_source(prod_config):
+def test_prod_daily_quality_is_disabled_until_production_abnahme(prod_config):
     module = importlib.import_module("moduls.szenarios.scenario_config")
     configuration = module.load_scenario_configuration(prod_config)
 
-    assert configuration.daily_quality_enabled is True
-    assert configuration.quality_grid_power_source is not None
-    assert configuration.quality_grid_power_source.bucket == "HomeAssistant"
-    assert configuration.quality_grid_power_source.entity_id == "fems_gridactivepower"
+    assert configuration.daily_quality_enabled is False
+    assert configuration.quality_grid_power_source is None
 
 
 def test_dev_daily_quality_uses_real_soc_measurement_name():
