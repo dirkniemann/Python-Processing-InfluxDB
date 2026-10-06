@@ -63,6 +63,26 @@ class BatteryScenarioEngine:
             raise ValueError("duration_s must be positive")
         if house_load_kw < 0 or pv_generation_kw < 0:
             raise ValueError("house load and PV generation must be non-negative")
+        if not self.definition.battery_enabled:
+            direct_pv_kw = min(house_load_kw, pv_generation_kw)
+            pv_export_kw = max(0.0, pv_generation_kw - direct_pv_kw)
+            grid_import_kw = max(0.0, house_load_kw - direct_pv_kw)
+            return IntervalResult(
+                timestamp=timestamp,
+                duration_s=duration_s,
+                soc_pct=0.0,
+                stored_energy_kwh=0.0,
+                house_load_kw=house_load_kw,
+                pv_generation_kw=pv_generation_kw,
+                pv_to_load_kw=direct_pv_kw,
+                pv_to_battery_kw=0.0,
+                battery_to_load_kw=0.0,
+                battery_charge_dc_kw=0.0,
+                battery_discharge_dc_kw=0.0,
+                grid_import_kw=grid_import_kw,
+                grid_export_kw=pv_export_kw,
+                pv_export_kw=pv_export_kw,
+            )
         if state.stored_energy_kwh < self.min_energy_kwh - 1e-9:
             raise ValueError("battery state is below the minimum SOC")
         if state.stored_energy_kwh > self.max_energy_kwh + 1e-9:

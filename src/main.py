@@ -178,14 +178,6 @@ def main() -> int:
                 first_data_day=first_data_day,
             )
             scenario_days = scenario_runner.process()
-            try:
-                scenario_runner.validate_real_battery()
-            except Exception:
-                logger.warning(
-                    "Real battery quality/efficiency analysis failed; "
-                    "simulation output remains complete",
-                    exc_info=True,
-                )
             days_processed = max(days_processed, scenario_days)
             scenario_date = getattr(scenario_runner, "last_complete_date", None)
             if scenario_date is not None and last_processed_date is not None:

@@ -50,12 +50,15 @@ def test_prod_scenario_loader_keeps_scenarios_and_modes_configurable(prod_config
 
     assert set(configuration.definitions) == {
         "current_battery",
+        "without_battery",
         "8_modules_2_towers",
         "7_modules_1_tower",
         "14_modules_2_towers",
     }
     assert set(configuration.pv_modes) == {"without_old_pv", "with_old_pv"}
     assert configuration.definitions["current_battery"].capacity_kwh == 22.4
+    assert configuration.definitions["without_battery"].capacity_kwh == 0
+    assert configuration.definitions["without_battery"].charge_power_kw == 0
     assert configuration.definitions["7_modules_1_tower"].charge_power_kw == 30.0
     assert set(configuration.validation_sources) == {"battery_power", "battery_soc"}
 
@@ -71,14 +74,12 @@ def test_all_scenarios_can_be_disabled_without_invalidating_config(prod_config):
     assert configuration.definitions == {}
 
 
-def test_daily_quality_configuration_is_explicit_and_resolves_grid_source(prod_config):
+def test_prod_daily_quality_is_disabled_until_production_abnahme(prod_config):
     module = importlib.import_module("moduls.szenarios.scenario_config")
     configuration = module.load_scenario_configuration(prod_config)
 
-    assert configuration.daily_quality_enabled is True
-    assert configuration.quality_grid_power_source is not None
-    assert configuration.quality_grid_power_source.bucket == "HomeAssistant"
-    assert configuration.quality_grid_power_source.entity_id == "fems_gridactivepower"
+    assert configuration.daily_quality_enabled is False
+    assert configuration.quality_grid_power_source is None
 
 
 def test_dev_daily_quality_uses_real_soc_measurement_name():

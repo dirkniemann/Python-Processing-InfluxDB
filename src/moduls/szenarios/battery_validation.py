@@ -285,9 +285,19 @@ def _calculate_phase_efficiency(
 ) -> Optional[tuple[float, float]]:
     if stop <= start:
         return None
-    relevant = [item for item in soc_records if start <= item["time"] <= stop]
-    if not relevant or relevant[0]["time"] != start or relevant[-1]["time"] != stop:
+    previous = [item for item in soc_records if item["time"] <= start]
+    if not previous:
         return None
+    start_record = previous[-1]
+    if (start - start_record["time"]).total_seconds() > max_gap_s:
+        return None
+    relevant = [start_record] + [
+        item for item in soc_records if start < item["time"] <= stop
+    ]
+    if (stop - relevant[-1]["time"]).total_seconds() > max_gap_s:
+        return None
+    if relevant[-1]["time"] < stop:
+        relevant.append({"time": stop, "value": relevant[-1]["value"]})
     if any(
         (next_item["time"] - item["time"]).total_seconds() > max_gap_s
         for item, next_item in zip(relevant, relevant[1:])
