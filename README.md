@@ -1,197 +1,441 @@
-﻿# Python-Auswertung für Home Assistant und InfluxDB
+# Home Assistant InfluxDB Processing
 
-Dieses Repository verarbeitet Home-Assistant-Zeitreihen aus InfluxDB 2.x. Es bereinigt Wärmepumpenzähler, erstellt Wärmepumpenstatistiken und einen korrigierten Hausverbrauch. Zusätzlich enthält es eine konfigurationsgesteuerte Batteriesimulation. Betriebsergebnisse werden in InfluxDB, Logs und – in prod – über MQTT an Home Assistant gemeldet.
+This repository processes Home Assistant time-series data stored in InfluxDB 2.x.
+It repairs heat-pump counter data, derives heat-pump statistics and corrected
+house consumption, and can run configurable battery-storage simulations.
+Production runs also publish retained run status to Home Assistant over MQTT.
 
-**Status:** Die bestehende Wärmepumpenverarbeitung und der MQTT-Laufstatus sind implementiert. Die Batteriesimulation ist technisch implementiert, aber fachlich noch nicht für den Produktivbetrieb freigegeben. In prod sind alle Batterieszenarien deaktiviert.
+The application is intentionally configuration-driven. The Python code contains
+the processing algorithms; stage-specific JSON files define buckets, source
+series, output series, model versions, and enabled scenarios.
 
-## Überblick
+## What the application does
 
-| Bereich | Implementierung | Ausgabe |
+The application processes complete local calendar days in `Europe/Berlin`. The
+current day is never processed. Processing is incremental: every processor
+looks up its last output day for its configured version and continues through
+yesterday. Timestamps are queried and written as UTC-aware timestamps, while
+day boundaries are calculated in `Europe/Berlin`, including 23-hour and
+25-hour DST days.
+
+### Processing pipeline
+
+1. Load `.env`, the selected stage configuration, logging, and optional MQTT.
+2. Connect to InfluxDB and find the first available day in the input bucket.
+3. Run the configured Home Assistant processors in order.
+4. Run battery scenarios when the `scenarios` section is present.
+5. Write a run summary, publish the final MQTT status, and close connections.
+
+### Heat-pump counter repair
+
+The `fix_waermepumpe_stromverbrauch` processor repairs daily heat-pump
+consumption counters, including missing or shifted resets, and writes a
+monotonic, normalized daily curve. The configured production output is:
+
+- Bucket: `HomeAssistant_processed`
+- Measurement: `fix_waermepumpe_stromverbrauch`
+- Field: `value`
+- Tags: `entity_id`, `version`, `unit`
+
+### Daily aggregates
+
+The `daily_aggregate` processor calculates daily counter totals for the
+configured heat-pump entities and writes them to:
+
+- Measurement: `Waermepumpe_statistik`
+- Entity: configured by `output_entity_id` (`Gesamt` in the supplied stages)
+- Field: `daily_sum`
+- Unit: `kWh`
+
+### Heat-pump statistics
+
+`Waermepumpe_statistik` distributes positive counter deltas over time. Compressor
+activity and the configured post-run period are used as weights. Positive
+`fems_gridactivepower` is treated as one shared grid budget and is not counted
+twice for two heat pumps. The calculated PV share is therefore a derived
+remainder, not a directly measured PV flow.
+
+The processor reads repaired counters from
+`fix_waermepumpe_stromverbrauch` and writes interval and daily values to the
+configured `Waermepumpe_statistik` measurement.
+
+The statistic fields are:
+
+| Field | Unit | Meaning |
 | --- | --- | --- |
-| Wärmepumpen-Tageszähler | Fehlende bzw. verschobene Tagesresets korrigieren und Tageskurven monotonisieren | Measurement fix_waermepumpe_stromverbrauch |
-| Tagesaggregate | Bereinigte Zählerstände pro Tag und zusammengefasster Gesamtwert | Measurement Waermepumpe_statistik, Feld daily_sum |
-| Wärmepumpenstatistik | Pumpenenergie zeitlich aufteilen und ein gemeinsames positives Netzbudget höchstens einmal zuweisen | Measurement Waermepumpe_statistik; Intervall- und Tageswerte |
-| Korrigierter Hausverbrauch | FEMS-Hausverbrauch und MT-Stall-neu-Leistung zeitgewichtet auf ein konfigurierbares Intervall mitteln und addieren | Measurement Hausverbrauch_korrigiert |
-| Batterieszenarien | Sample-and-hold-Eingänge, idealisiertes Speichermodell, Tagesfortschreibung und Wiederanlauf | battery_scenario_timeseries und battery_scenario_daily |
-| Laufstatus | Laufzeit, Ergebnis, Warnungen und Diagnose über MQTT Discovery | Retained Sensoren im Home-Assistant-Dashboard |
+| `pv_contribution` | `kWh` | Derived PV contribution for an interval |
+| `grid_import` | `kWh` | Shared grid allocation for an interval |
+| `daily_pv` | `kWh` | Daily PV contribution |
+| `daily_grid_import` | `kWh` | Daily shared grid allocation |
+| `daily_sum` | `kWh` | Daily aggregate output from the daily-aggregate processor |
 
-Die normalen Prozessoren werden unter src/moduls/processing/ konfiguriert. Die Batteriesimulation liegt unter src/moduls/szenarios/. src/main.py steuert den Lauf und src/moduls/influxdb_handler.py kapselt InfluxDB-Abfragen und Schreibzugriffe.
+The entity ID is the configured heat-pump entity for per-pump values and
+`Gesamt` for the configured total.
 
-## Verarbeitungsablauf
+### Corrected house consumption
 
-1. main.py lädt Stage-Konfiguration und .env, richtet Logging und MQTT ein und verbindet sich mit InfluxDB.
-2. Verarbeitungstage sind vollständige lokale Kalendertage in Europe/Berlin; der aktuelle Tag wird nicht verarbeitet.
-3. HomeAssistantProcessor führt die unter processing.entities_to_process konfigurierten Prozessoren der Reihe nach aus.
-4. Wenn scenarios in der Konfiguration vorhanden ist, startet der Szenario-Runner. Sind keine Definitionen aktiviert, protokolliert er dies und überspringt die Simulation.
-5. Der Lauf wird mit Status, Laufzeit und Diagnose abgeschlossen; InfluxDB und MQTT werden getrennt.
+`corrected_house_consumption` treats configured source measurements as
+change-only power values. A value remains effective until the next change; a
+value immediately before the day is loaded when available. Values are
+time-weighted over the configured interval and written at the interval start.
+Negative results are clamped to zero.
 
-Die Tagesverarbeitung ist inkrementell: Prozessoren suchen den letzten geschriebenen Tag ihrer Ausgabeversion und arbeiten danach bis gestern weiter. Tagesgrenzen werden als Europe/Berlin nach UTC umgerechnet. InfluxDB-Zeitstempel werden intern einheitlich als UTC-aware verarbeitet; Kalenderdaten werden für die Tageszuordnung nach Europe/Berlin konvertiert. Normale Prozessoren und Szenarien verwenden dadurch dieselbe Berliner Tagesgrenze, einschließlich korrekter 23- und 25-Stunden-Tage bei den Zeitumstellungen.
+The supplied configuration uses a 90-second interval:
 
-## Daten und fachliche Grenzen
+- Measurement: `Hausverbrauch_korrigiert`
+- Entity: `Hausverbrauch_korrigiert`
+- Field: `value`
+- Unit: `W`
+- Version: `v1`
 
-### Wärmepumpenstatistik
+The source is `W / elektrischer_verbrauch / value` in the `HomeAssistant`
+bucket. The processor does not add `mt_stall_neu` a second time when the input
+already represents the corrected house load.
 
-Die beiden Wärmepumpenzähler werden anhand der Kompressorsignale und des konfigurierbaren Nachlaufs (aktuell 15 Minuten) zeitlich gewichtet. Positive Werte von fems_gridactivepower bilden ein gemeinsames Netzbudget. Dieses Budget wird nicht doppelt auf beide Pumpen verteilt. Der ausgewiesene PV-Anteil ist ein rechnerischer Rest, kein direkt gemessener PV-Stromfluss.
+### Battery scenarios
 
-Die Konfiguration benennt Sensorrollen ausdrücklich. Die Quellen müssen in InfluxDB mit exakt passendem, case-sensitive Measurement, Entity, Field und Unit vorhanden sein.
+The scenario runner uses sample-and-hold input series and an idealized battery
+model:
 
-### Korrigierter Hausverbrauch
+1. PV supplies the house load.
+2. Remaining PV charges the battery up to its limits.
+3. Remaining PV is exported.
+4. A load deficit discharges the battery up to its limits.
+5. The remaining deficit is imported from the grid.
 
-Der konfigurierte Rechenweg lautet:
+Scenario simulation is not a calibrated forecast and is not a complete AC
+energy balance. It is a reproducible comparison model. The configured version
+is the reprocessing boundary: changing historical inputs or model assumptions
+requires a new scenario version so that the series are recalculated
+chronologically.
 
-    zeitgewichteter Mittelwert von elektrischer_verbrauch
+The scenario output uses the configured scenario bucket and the
+`batterie_szenarien` measurement. Every point has these tags:
 
-Der bereits mit MT-Stall-neu korrigierte Sensor wird als Change-only-Leistungswert behandelt: Der zuletzt bekannte Wert gilt bis zur nächsten Änderung; ein Zustand vor Tagesbeginn wird geladen, falls vorhanden. Die Leistung wird energieerhaltend zeitgewichtet auf gemeinsame Intervalle gemittelt (dev/prod: 300 Sekunden, über `interval_seconds` konfigurierbar). Negative Intervallmittelwerte werden auf null begrenzt. MT-Stall-neu wird nicht erneut zum Hausverbrauch addiert. Ausgegeben wird der Mittelwert mit dem Zeitstempel des Intervallstarts. Die Korrektur läuft in Version v4; die Batterieszenarien lesen ebenfalls v4.
+| Tag | Meaning |
+| --- | --- |
+| `entity_id` | Signal name |
+| `scenario` | Battery definition |
+| `pv_mode` | PV source selection |
+| `version` | Scenario model version |
+| `unit` | `%`, `W`, or `kWh` |
 
-### Batteriesimulation
+Interval fields:
 
-Der Runner verarbeitet jede aktivierte Szenariodefinition mit jedem konfigurierten PV-Modus. Er schreibt Leistungs- und SOC-Zeitreihen sowie lokale Tagesenergien. Tageszustände und die Vollständigkeit anhand des gespeicherten Tagesendzustands werden berücksichtigt. Die konfigurierte Simulationsversion ist bewusst die Reprocessing-Grenze: Wenn historische Eingaben oder Annahmen geändert werden, wird eine neue Version verwendet und der SOC ab dem ersten Tag chronologisch neu berechnet. Separate Eingabefingerprints sind dafür nicht erforderlich.
+| Entity IDs | Field | Unit |
+| --- | --- | --- |
+| `soc_pct`, `stored_energy` | `actual` | `%`, `kWh` |
+| `house_load`, `pv_generation`, `pv_to_load` | `actual` | `W` |
+| `pv_to_battery`, `battery_to_load`, `grid_import`, `grid_export` | `actual` | `W` |
 
-Das V1-Modell ist eine transparente Idealisierung ohne zusätzliche Lade-/Entladeverluste. PV deckt zuerst die Last, Überschüsse laden den Speicher, verbleibende Überschüsse werden exportiert; bei Lastdefizit entlädt der Speicher bis zu seinen Grenzen, der Rest wird importiert. Das Modell bildet die konfigurierten DC-Leistungsgrenzen ab, ist aber keine kalibrierte Prognose und keine vollständige AC-Bilanz. Das aktivierte Szenario `without_battery` ist die Referenz mit 0 kWh: PV deckt nur direkt den Hausverbrauch, ohne Batterie wird der Überschuss eingespeist und der Rest aus dem Netz bezogen. Es wird wie jedes andere Szenario für `without_old_pv` und `with_old_pv` mit denselben Zeitreihen- und Tagesfeldern geschrieben.
+Daily energy entities use `daily_sum` in `kWh`. Daily SOC uses `start` and
+`end` fields in percent and also stores start/end energy in kWh.
 
-Aktuell konfigurierte Annahmen sind 22,4 kWh Grundkapazität, 17,92 kW Lade- und Entladeleistung, 5–100 % SOC und 5 % Start-SOC für eine neue Simulationsversion. `charge_efficiency` und `discharge_efficiency` werden global unter `scenarios.setup` für alle Batteriesimulationen gesetzt; aktuell stehen beide auf `1.0`, damit die Ergebnisse gegenüber der idealisierten V1 unverändert bleiben. PV-Modi sind without_old_pv und with_old_pv. Prod schreibt in den konfigurierten Bucket; dev schreibt nach testing.
+The supplied PV modes are:
 
-Die reale Batterie wird zusätzlich pro neu simuliertem Tag ausschließlich für `current_battery` im PV-Modus `without_old_pv` bewertet, wenn `scenarios.quality.enabled` aktiv ist. Für andere Szenarien oder `with_old_pv` werden keine Qualitäts- oder Fehlerfelder geschrieben. Unter den Tages-Entity-IDs `soc_pct`, `grid_import` und `grid_export` werden `quality` und `signed_error` gespeichert. `quality` ist der zeitgewichtete SOC-MAE in Prozentpunkten beziehungsweise der absolute Import-/Exportfehler in kWh; `signed_error` ist Simulation minus Realität. Die realen Grid-Import- und Exportenergien aus `fems_gridactivepower` werden für den Vergleich integriert, aber nicht gespeichert. Fehlt ein gültiger Wert vor der lokalen Tagesgrenze, wird der erste gültige Wert des Tages ab Tagesbeginn per Sample-and-hold verwendet; ungültige Einzelwerte verwerfen nicht den gesamten Tag. Nur vollständig fehlende oder unbrauchbare Quellen führen zum Auslassen der Tagesqualität.
+- `without_old_pv`: local PV (`fems_pv` and `mt_stall_neu`)
+- `with_old_pv`: local PV plus `mt_stall_alt_1` and `mt_stall_alt_2`
 
-Die getrennte reale Wirkungsgradanalyse wird über `scenarios.efficiency.enabled` aktiviert und beeinflusst die Simulation nicht. Sie verwendet ausschließlich die aktuelle Batterie (`current_battery`), den PV-Modus `without_old_pv` und die feste Basiskapazität von 22,4 kWh. Valide Tageswerte werden im bestehenden Measurement `batterie_szenarien` des Szenario-Output-Buckets mit den Entity-IDs `eta_charge` und `eta_discharge`, der Einheit `ratio` und dem Feld `daily_value` gespeichert. `daily_sum` bleibt für Energie-Summen reserviert. Fehlende oder unplausible Lade-/Entladephasen erzeugen keine Punkte und keine Ersatzwerte. Große Rohdatenlücken werden nicht interpoliert; kleine SOC-Gegenbewegungen werden innerhalb der Analyse-Toleranz akzeptiert. DEV aktiviert die Analyse, PROD bleibt bis zur fachlichen Abnahme deaktiviert.
+The supplied battery definitions are `current_battery`, `without_battery`,
+`16_modules_2_towers`, `15_modules_1_tower`, `22_modules_2_towers`, and
+`30_modules_2_towers`. Only definitions with `"enabled": true` are processed.
+`without_battery` is the zero-capacity reference scenario.
 
-Zusätzlich werden bei aktivierter Tagesqualität direkte, signierte Fehler-Zeitreihen mit Feld `error` geschrieben. `error` bedeutet immer Simulation minus Realität. SOC-Fehler werden in Prozentpunkten gespeichert, Grid-Import- und Grid-Export-Fehler in W. Die simulierten Leistungs-Zeitreihen (`house_load`, `pv_generation`, `pv_to_load`, `pv_to_battery`, `battery_to_load`, `grid_import`, `grid_export`) werden ebenfalls in W persistiert; die Engine rechnet intern weiterhin in kW. Der Schalter ist in dev aktiviert und in prod deaktiviert. Die separate Auswertung von gemessener Batterie-DC-Leistung und SOC bleibt diagnostisch; widersprüchliche Lade-/Entladeresiduen werden nicht als Wirkungsgrad-Korrekturfaktor verwendet.
+Optional quality analysis compares the current battery with measured SOC and
+grid power. Daily quality points use `quality` and `signed_error` fields;
+time-series comparison points use the `error` field. Signed errors always mean
+simulation minus reality. Quality analysis does not alter the simulation.
+Optional efficiency analysis is also diagnostic and does not change model
+results.
 
-## Konfiguration
+## InfluxDB data contract
 
-Stage-Dateien sind config/dev.json und config/prod.json. main.py akzeptiert außerdem test; dafür muss config/test.json angelegt sein. Wichtige Abschnitte:
+All source series are matched case-sensitively by bucket, measurement,
+`entity_id`, field, and, where configured, version. The default source shape is:
 
-- processing: Eingabe- und Ausgabe-Bucket sowie Prozessorversionen, Quellen und Ziel-Measurements.
-- scenarios: Buckets, Modellgrenzen, Quellen, PV-Gruppen/-Modi und aktivierte Speicherdefinitionen.
-- mqtt: Broker, Discovery-Präfix, Topics, Timeouts und Schalter.
+```text
+measurement: <configured measurement>
+tags:        entity_id, version, scenario, pv_mode, unit
+field:       value (or a processor-specific output field)
+timestamp:   UTC
+```
 
-| Stage | MQTT | Verarbeitungsausgabe | Batterieszenarien |
-| --- | --- | --- | --- |
-| dev | deaktiviert | testing | alle vier Definitionen aktiviert |
-| prod | aktiviert | HomeAssistant_processed | alle Definitionen deaktiviert |
-| test | config/test.json erforderlich | stageabhängig | stageabhängig |
+Input and output bucket names are configured; no bucket is created implicitly.
+The InfluxDB token must have read access to every input bucket and write access
+to every output bucket.
 
-InfluxDB-Anmeldedaten müssen als Umgebungsvariablen bereitstehen:
+## Configuration
 
-    INFLUX_URL=http://influxdb:8086
-    INFLUX_TOKEN=...
-    INFLUX_ORG=...
+The stage is selected with `--stage` and maps to `config/<stage>.json`:
 
-MQTT verwendet nur dann Benutzername und Passwort, wenn der Broker sie verlangt. Die Variablennamen sind über mqtt.username_env und mqtt.password_env konfiguriert; die Vorgaben sind MQTT_USERNAME und MQTT_PASSWORD. Zugangsdaten gehören nicht in die JSON-Dateien oder ins Repository. .env wird aus dem Repository-Stamm geladen und ist ignoriert.
+| Stage | MQTT | Processing output | Scenario output | Supplied scenario state |
+| --- | --- | --- | --- | --- |
+| `dev` | Disabled | `HomeAssistant_processed` | `testing` | quality and efficiency enabled |
+| `prod` | Enabled | `HomeAssistant_processed` | `Scenarios` | quality and efficiency disabled |
+| `test` | Requires `config/test.json` | Defined by that file | Defined by that file | Defined by that file |
 
-## Lokal starten
+The most important configuration sections are:
 
-Voraussetzung: Python 3.10 oder neuer und Zugriff auf die benötigte InfluxDB. Die produktive Installation nutzt Python 3 und InfluxDB-Client/MQTT-Abhängigkeiten aus requirements.txt.
+- `processing.input_bucket` and `processing.output_bucket`
+- `processing.entities_to_process`
+- `scenarios.buckets`, `setup`, `sources`, `pv_sources`, and `pv_modes`
+- `scenarios.definitions.<name>.enabled`
+- `scenarios.quality.enabled` and `scenarios.efficiency.enabled`
+- `mqtt.enabled`, broker settings, topic prefixes, and timeouts
 
-Windows PowerShell:
+Keep credentials out of JSON files and Git. The application loads `.env` from
+the repository root. Use `.env_example` as a template:
 
-    py -m venv venv_dev
-    .\venv_dev\Scripts\Activate.ps1
-    python -m pip install -r requirements_dev.txt
-    python src/main.py --stage dev
+```dotenv
+INFLUX_URL=http://influxdb:8086
+INFLUX_TOKEN=replace_with_a_token
+INFLUX_ORG=replace_with_an_org
+MQTT_USERNAME=replace_if_required
+MQTT_PASSWORD=replace_if_required
+```
 
-Linux:
+`MQTT_USERNAME` and `MQTT_PASSWORD` are only used when MQTT is enabled and can
+be renamed through `mqtt.username_env` and `mqtt.password_env`.
+`INFLUX_TIMEOUT_MS` is optional and defaults to `100000`.
 
-    python3 -m venv venv
-    . venv/bin/activate
-    python -m pip install -r requirements.txt
-    python src/main.py --stage dev
+When changing historical inputs or simulation assumptions, increment the
+relevant processor or scenario `version`. Versions are used to find the last
+completed day and prevent incompatible output series from being mixed.
 
-CLI-Optionen:
+## Requirements
 
-- --stage {dev,test,prod} wählt config/<stage>.json; Standard ist dev.
-- --log-level {DEBUG,INFO,WARNING,ERROR} überschreibt die Stage-Vorgabe.
-- --log-file <Pfad> setzt eine eigene Logdatei.
+- Python 3.10 or newer
+- InfluxDB 2.x
+- An InfluxDB token with the permissions described above
+- Optional: an MQTT 3.1.1 broker for Home Assistant status reporting
+- Linux `cron`, `flock`, `git`, `logrotate`, and `sha256sum` for the supplied
+  production deployment
 
-Der Einstiegspunkt für den direkten Aufruf ist python src/main.py. Vor einem produktiven Lauf Stage-Konfiguration, Bucketnamen und Zugangsdaten prüfen: ein Lauf schreibt in die dort angegebenen InfluxDB-Buckets.
+Python dependencies are pinned in `requirements.txt`; development and test
+dependencies are in `requirements_dev.txt`.
+
+## Local installation and execution
+
+### Windows PowerShell
+
+```powershell
+py -m venv venv_dev
+.\venv_dev\Scripts\Activate.ps1
+python -m pip install -r requirements_dev.txt
+Copy-Item .env_example .env
+# Edit .env with real credentials.
+python src/main.py --stage dev
+```
+
+### Linux
+
+```bash
+python3 -m venv venv
+. venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env_example .env
+# Edit .env with real credentials.
+python src/main.py --stage dev
+```
+
+The command-line interface is:
+
+```text
+python src/main.py [--stage {dev,test,prod}]
+                  [--log-level {DEBUG,INFO,WARNING,ERROR}]
+                  [--log-file PATH]
+```
+
+The default stage is `dev`. A production invocation writes to the buckets and
+measurements configured in `config/prod.json`; review that file before running
+it.
+
+## Production deployment on Debian/Ubuntu
+
+The repository contains a complete example deployment for a Linux host. The
+following paths are the defaults used by the scripts:
+
+```text
+/opt/Python-Processing-InfluxDB
+/opt/Python-Processing-InfluxDB/venv
+/usr/local/sbin/python-auswertung-launcher
+/var/log/Python_Auswertung/
+```
+
+If the checkout uses another path, update `REPO_DIR` and related paths in
+`run_script.sh`, `deploy/launcher/python-auswertung-launcher`, and
+`cron.d_influx_job`.
+
+### One-time installation
+
+Run from the repository checkout as root or with `sudo`:
+
+```bash
+sudo install -o root -g root -m 0755 \
+  deploy/launcher/python-auswertung-launcher \
+  /usr/local/sbin/python-auswertung-launcher
+sudo install -o root -g root -m 0644 \
+  deploy/logrotate/python-auswertung \
+  /etc/logrotate.d/python-auswertung
+sudo install -o root -g root -m 0644 \
+  cron.d_influx_job \
+  /etc/cron.d/influx_job
+sudo chmod 0755 run_script.sh
+```
+
+Create the production virtual environment and install dependencies:
+
+```bash
+sudo python3 -m venv /opt/Python-Processing-InfluxDB/venv
+sudo /opt/Python-Processing-InfluxDB/venv/bin/python \
+  -m pip install -r /opt/Python-Processing-InfluxDB/requirements.txt
+```
+
+Place `.env` in the repository root and make it readable by the account that
+executes the job. The example launcher runs as `root`, performs
+`git pull --ff-only origin master` before each run, validates logrotate, and
+then calls `run_script.sh`. Ensure the checkout has the required Git remote,
+branch, ownership, and credentials before enabling this behavior.
+
+### Cron schedule
+
+`cron.d_influx_job` runs the launcher every day at 04:00 local host time:
+
+```cron
+0 4 * * * root /usr/bin/flock -n /tmp/influx_job.lock /usr/local/sbin/python-auswertung-launcher
+```
+
+Files in `/etc/cron.d` are read automatically; a cron restart is normally not
+required. On Debian and Ubuntu the service is named `cron`, not `crond`:
+
+```bash
+sudo systemctl enable --now cron
+sudo systemctl status cron --no-pager
+sudo ls -l /etc/cron.d/influx_job
+sudo cat /etc/cron.d/influx_job
+```
+
+The file must be owned by `root:root` and normally have mode `0644`. `flock`
+prevents overlapping runs.
+
+### Manual production test
+
+Do not wait for 04:00 to validate a deployment:
+
+```bash
+sudo /usr/local/sbin/python-auswertung-launcher
+sudo tail -n 100 /var/log/Python_Auswertung/runs.log
+```
+
+The launcher writes early deployment failures to `runs.log`. The application
+writes detailed timestamped logs and a compact run summary. `logrotate` rotates
+the summary at 10 MB and keeps ten compressed archives.
+
+## MQTT status for Home Assistant
+
+When enabled, the application publishes retained status values and Home
+Assistant MQTT Discovery configuration. Topics are based on:
+
+```text
+<topic_prefix>/<stage>/state
+<topic_prefix>/<stage>/availability
+<discovery_prefix>/...
+```
+
+The default topic prefix is `python-processing`; the default Discovery prefix
+is `homeassistant`. The published status includes result, run state, last
+successful run, runtime, last processed date, and a sanitized diagnostic.
+Results are `SUCCESS`, `SUCCESS_WITH_WARNINGS`, and `ERROR`.
+
+The MQTT Last Will marks an unexpectedly terminated run as failed. A clean
+disconnect leaves the retained result unchanged. MQTT reporting is best-effort
+and must not prevent the InfluxDB processing result from being logged.
+
+The optional dashboard definition is in `docs/home_assistant_dashboard.yaml`.
+
+## Logging and troubleshooting
+
+Development and test logs default to `logs/`. Production logs and summaries
+default to `/var/log/Python_Auswertung/`. A run summary contains status, number
+of processed days, duration, processing step, warning count, and error details.
+
+Common checks:
+
+```bash
+# Verify credentials are present without printing their values.
+test -n "$INFLUX_URL" && test -n "$INFLUX_TOKEN" && test -n "$INFLUX_ORG"
+
+# Verify the production service and schedule.
+systemctl status cron --no-pager
+cat /etc/cron.d/influx_job
+
+# Run the Python entry point directly.
+cd /opt/Python-Processing-InfluxDB
+/opt/Python-Processing-InfluxDB/venv/bin/python src/main.py --stage prod
+
+# Inspect the latest summary.
+tail -n 100 /var/log/Python_Auswertung/runs.log
+```
+
+An HTTP 403 normally means that the token lacks access to the requested
+bucket. An HTTP 404 normally means that the bucket or organization is wrong.
+Missing source data, invalid configuration, or an incomplete sample-and-hold
+day is reported in the application log; no synthetic success value is written.
 
 ## Tests
 
-Tests starten aus dem Repository-Stamm:
+Tests use fakes for InfluxDB and MQTT and do not replace a test against the
+real buckets and broker:
 
-    python -m pytest
+```bash
+python -m pytest
+```
 
-In der Windows-Entwicklungsumgebung:
+On Windows, use the project interpreter explicitly when needed:
 
-    .\venv_dev\Scripts\python.exe -m pytest
+```powershell
+.\venv_dev\Scripts\python.exe -m pytest
+```
 
-Die Tests verwenden Fakes für InfluxDB und MQTT; sie prüfen keine echte Broker-/InfluxDB-Verbindung und ersetzen keinen Abgleich gegen reale Messdaten.
+The test suite covers processors, DST boundaries, scenario calculations,
+configuration validation, logging, MQTT status, and InfluxDB handler behavior.
 
-## Logs und Laufstatus
+## Repository layout
 
-Detaillierte Logs werden in dev/test standardmäßig im Verzeichnis logs/ und in prod unter /var/log/Python_Auswertung/ abgelegt. Alte timestamp-basierte Logdateien werden nach 30 Tagen entfernt. Jeder Python-Lauf versucht zusätzlich, eine kompakte Zeile an /var/log/Python_Auswertung/runs.log anzuhängen. Dieser Pfad ist derzeit fest im Code hinterlegt und damit vor allem für das Linux-Produktivsystem passend. Im Deployment rotiert logrotate diese Datei ab 10 MB und behält zehn Archive.
+```text
+config/                 Stage-specific JSON configuration
+deploy/launcher/        Production launcher
+deploy/logrotate/       Production logrotate rule
+docs/                   Home Assistant dashboard and reference documents
+src/main.py             Application entry point
+src/moduls/processing/  Heat-pump and house-consumption processors
+src/moduls/szenarios/   Battery model, validation, and scenario runner
+tests/                  Unit tests with service fakes
+cron.d_influx_job       Cron definition for the production host
+run_script.sh           Production virtualenv/dependency runner
+requirements.txt        Runtime dependencies
+requirements_dev.txt    Development and test dependencies
+```
 
-Python-interne Ergebniswerte sind:
+## Safety and operational notes
 
-| Interner Status | Bedeutung |
-| --- | --- |
-| SUCCESS | Ohne Warnungen und fatalen Fehler beendet |
-| SUCCESS_WITH_WARNINGS | Beendet, mindestens eine Python-Logging-Warnung aufgetreten |
-| ERROR | Fataler Fehler oder behandelter Abbruch, einschließlich Ctrl+C |
+- Never commit `.env`, API tokens, MQTT passwords, or other credentials.
+- Treat `config/prod.json` as a write configuration: it controls real output
+  buckets and enabled simulations.
+- Create a new version before reprocessing historical data with changed logic
+  or assumptions.
+- Test configuration and permissions with `dev` or `test` before enabling
+  production.
+- The battery model is an analysis tool, not a charge controller or safety
+  system.
+- Review source measurements and units before changing entity mappings.
 
-Home Assistant erhält über MQTT Discovery deutsche Werte: Ergebnis Erfolgreich, Erfolgreich mit Warnungen oder Fehler; Laufzustand Läuft oder Leerlauf. Das Dashboard in docs/home_assistant_dashboard.yaml färbt Erfolg grün, Warnungen orange, Fehler rot und einen laufenden Job grün. Diagnose letzter Lauf zeigt gekürzte Warnungsbeispiele oder den Fehler samt Verarbeitungsschritt. Laufzeit, letzter erfolgreicher Lauf und letzter Verarbeitungstag bleiben erhalten.
+## License and project status
 
-Die Statuswerte werden retained übertragen. Das Availability-Topic bleibt zwischen Cron-Läufen online, obwohl der Python-Prozess nach jedem Lauf beendet wird. Ctrl+C wird regulär behandelt und mit Fehlerstatus und Abbruchdiagnose veröffentlicht. Bei einem harten Prozessabbruch setzt der MQTT-Last-Will den Ergebnisstatus auf Fehler; der letzte Laufzustand kann dabei retained auf Läuft stehen, und der Last-Will kann keine neue Diagnose erzeugen.
+No license file is currently included. Add an explicit license before
+redistributing the repository.
 
-## Produktivdeployment (Debian/Ubuntu)
-
-Vorhandene Deployment-Dateien:
-
-- cron.d_influx_job: täglicher Start um 04:00 Uhr mit flock.
-- deploy/launcher/python-auswertung-launcher: git pull --ff-only origin master, Logrotate-Prüfung und Start des Jobs.
-- run_script.sh: aktiviert /opt/Python-Processing-InfluxDB/venv, installiert geänderte Requirements und startet src/main.py --stage prod.
-- deploy/logrotate/python-auswertung: Rotation von runs.log.
-
-Der Launcher läuft im Beispiel als root und aktualisiert den Checkout vor jedem Lauf. Vor Installation müssen Repositorypfad, Remote/Branch (origin master), Verzeichnisrechte, .env, MQTT-Broker und Cron-Zeile zum Zielsystem passen. Launcher-Fehler vor dem Python-Start werden in runs.log geschrieben; sie können nicht vom Python-MQTT-Last-Will gemeldet werden.
-
-## Hilfswerkzeuge
-
-- tools/influx_audit/inventory.ps1 ist eine read-only Bestandsprüfung für InfluxDB. Die Optionen und Grenzen stehen in tools/influx_audit/README.md. Das Skript liest ausdrücklich die Zugangsdaten aus der Repository-Datei .env_agent und unterdrückt Credential-Werte in der Ausgabe.
-- infludxdb_delete.py löscht InfluxDB-Punkte anhand von Bucket, Measurement, Entity, Version und Zeitfenster. Standardziel ist der Bucket testing und das Measurement Waermepumpe_statistik. Ohne --all baut das Skript eine eingegrenzte Predicate-Abfrage; mit --all löscht es alle Daten im Zielbucket innerhalb des Zeitfensters. Die Optionen vorher prüfen und nicht mit --all gegen einen produktiven Bucket ausführen.
-
-## TODO
-
-### Prio 1
-- [in Arbeit] Qualitätskontrolle der `current_battery` stabilisieren und Datenabdeckung sichtbar protokollieren.
-- [in Arbeit] Direkte Fehler-Zeitreihen für SOC, Grid-Import und Grid-Export ergänzen.
-- [in Arbeit] Leistungs-Zeitreihen und Fehler auf W vereinheitlichen; Rohdatenverträge und verbleibende Einheiten werden noch gegen die Influx-Inventur geprüft.
-- [erledigt] Ungültige Einzelwerte dürfen nicht mehr automatisch den gesamten Qualitätstag verwerfen; vollständig fehlende Quellen bleiben ein nachvollziehbarer Auslassgrund.
-2026-09-28 20:34:19 - moduls.szenarios.scenarios_processor - WARNING - Skipping daily quality for 2025-07-23: invalid battery_soc sample on2025-07-23 13:09:48.406547+00:00
-2026-09-28 20:34:20 - moduls.szenarios.scenarios_processor - WARNING - Skipping daily quality for 2025-07-23; no valid local-midnight statefor source(s): battery_soc
-mache die qulitätsberechnung stabil. es ist doch egal, ob es um mitternacht daten gibt
-### Prio 2
-- kontrolliere meinen ganzen code auf Logikfehler und dokumenteire die, fixe die erstmal noch nicht, dokumenteire es in der readme oder eine zusätzlichen datei
-- kontrolliere den code auf best practice und fehlerhadnling, wo sorgt eine exception nicht sauber für ein abbruch und so, wo sollte noch eine log mehr entstehen, das kannst du direkt fixen
-
-
-### Vor einem aussagekräftigen DEV-Szenariolauf
-
-- [erledigt] Tagesbestimmung der normalen Prozessoren und der Simulation auf Europe/Berlin vereinheitlicht.
-
-### Vor Aktivierung der Batterie in prod
-
-- [ ] Nach DEV-Abnahme entscheiden, welche Szenarien in config/prod.json aktiviert werden. Aktuell ist enabled für alle vier Definitionen false; die Simulation produziert daher in prod keine Szenarioausgabe.
-- [ ] V1-Verlustannahme und AC/DC-Grenzen vor der Interpretation der Kennzahlen sichtbar dokumentieren; Simulationsergebnisse sind bis dahin relative, idealisierte Schätzungen.
-- [ ] Reale Batterie-Diagnose mit belastbareren Energie-/SOC-Daten und längeren Zeiträumen prüfen. Die aktuelle DC-Leistung-/SOC-Auswertung ist diagnostisch; widersprüchliche Residuen erlauben keinen Wirkungsgrad-Korrekturfaktor.
-- [ ] Dashboard-/Grafana-Auswertung der Measurements battery_scenario_timeseries und battery_scenario_daily anhand eines fachlich geprüften Laufs ergänzen.
-
-### Betrieb und Wartbarkeit
-
-- [ ] MQTT-Verhalten bei hartem Abbruch verbessern oder dokumentieren: Last-Will setzt nur das Ergebnis auf Fehler; Laufzustand bleibt Läuft, und Diagnose bleibt beim letzten regulär veröffentlichten Text.
-- [ ] Den fest hinterlegten Pfad für runs.log konfigurierbar machen oder nach Stage trennen. Ein lokaler dev/test-Lauf kann sonst an fehlenden Rechten auf /var/log/Python_Auswertung scheitern; der Summary-Fehler wird aktuell selbst als fataler Laufabschluss behandelt.
-
-## Repository-Orientierung
-
-- src/main.py – CLI und Lebenszyklus des Processing-Laufs.
-- src/moduls/influxdb_handler.py – InfluxDB-Zeitabfragen, Tagesgrenzen, Versionsabfragen und Writer.
-- src/moduls/processing/ – Tageszähler, Aggregate, Wärmepumpenstatistik und korrigierter Hausverbrauch.
-- src/moduls/szenarios/ – Batterieparameter, idealisierte Engine, Eingabevalidierung, Wiederanlauf und Measurements.
-- src/moduls/mqtt_status.py – MQTT Discovery, Retain, Last-Will, Verfügbarkeits- und Ergebnisstatus.
-- config/ – Stage-Konfiguration.
-- docs/ – Home-Assistant-Dashboard und Anlagen-/Modbus-Unterlagen.
-- deploy/ sowie cron.d_influx_job und run_script.sh – Linux-Betrieb.
-- tests/ – Unit- und Komponentenprüfungen.
-- tools/influx_audit/ – read-only Inventurhilfe für InfluxDB.
-- docs/code-audit-prio2.md – dokumentierte Prio-2-Befunde und offene Abnahmerisiken.
-
-Zuletzt lokal geprüfter Stand: 93 Tests bestanden. Tests bei Code- oder Konfigurationsänderungen erneut ausführen.
+The heat-pump processing, scenario engine, incremental day handling, logging,
+tests, and MQTT run-status integration are implemented. Whether individual
+production scenarios should be enabled remains a domain decision controlled by
+the `enabled` flags in `config/prod.json`.
