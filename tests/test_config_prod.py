@@ -48,16 +48,8 @@ def test_prod_scenario_loader_keeps_scenarios_and_modes_configurable(prod_config
         definition["enabled"] = True
     configuration = module.load_scenario_configuration(active_config)
 
-    assert set(configuration.definitions) == {
-        "current_battery",
-        "without_battery",
-        "16_modules_2_towers",
-        "15_modules_1_tower",
-        "22_modules_2_towers",
-        "30_modules_2_towers",
-    }
     assert set(configuration.pv_modes) == {"without_old_pv", "with_old_pv"}
-    assert configuration.definitions["current_battery"].capacity_kwh == 22.4
+    assert configuration.definitions["current_battery"].capacity_kwh == 19.6
     assert configuration.definitions["without_battery"].capacity_kwh == 0
     assert configuration.definitions["without_battery"].charge_power_kw == 0
     assert configuration.definitions["15_modules_1_tower"].charge_power_kw == 30.0

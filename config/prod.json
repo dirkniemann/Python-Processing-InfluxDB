@@ -94,16 +94,16 @@
         }
     },
     "scenarios": {
-        "version": "v2",
+        "version": "v3",
         "buckets": {
             "source_bucket": "HomeAssistant",
             "processing_bucket": "HomeAssistant_processed",
             "output_bucket": "Scenarios"
         },
         "setup": {
-            "base_capacity_kwh": 22.4,
-            "base_charge_power_dc_kw": 17.92,
-            "base_discharge_power_dc_kw": 17.92,
+            "base_capacity_kwh": 19.6,
+            "base_charge_power_dc_kw": 15.68,
+            "base_discharge_power_dc_kw": 15.68,
             "min_soc_pct": 5,
             "max_soc_pct": 100,
             "initial_soc_pct": 5,
@@ -187,36 +187,71 @@
             "enabled": false
         },
         "definitions": {
-            "current_battery": {
-                "enabled": true,
-                "extra_capacity_kwh": 0,
-                "extra_power_kw": 0
-            },
             "without_battery": {
                 "enabled": true,
                 "battery_enabled": false,
                 "extra_capacity_kwh": 0,
                 "extra_power_kw": 0
             },
-            "16_modules_2_towers": {
+            "current_battery": {
                 "enabled": true,
-                "extra_capacity_kwh": 22.4,
+                "extra_capacity_kwh": 0,
                 "extra_power_kw": 0
+            },
+            "8_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 2.8,
+                "extra_power_kw": 2.24
+            },
+            "9_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 5.6,
+                "extra_power_kw": 4.48
+            },
+            "10_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 8.4,
+                "extra_power_kw": 6.72
+            },
+            "11_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 11.2,
+                "extra_power_kw": 8.96
+            },
+            "12_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 14.0,
+                "extra_power_kw": 11.2
+            },
+            "13_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 16.8,
+                "extra_power_kw": 13.44
+            },
+            "14_modules_1_tower": {
+                "enabled": true,
+                "extra_capacity_kwh": 19.6,
+                "extra_power_kw": 14.32
             },
             "15_modules_1_tower": {
                 "enabled": true,
-                "extra_capacity_kwh": 19.6,
-                "extra_power_kw": 12.08
+                "extra_capacity_kwh": 22.4,
+                "extra_power_kw": 14.32
+            },
+            "16_modules_2_towers": {
+                "enabled": true,
+                "extra_capacity_kwh": 25.2,
+                "extra_power_kw": 2.24
             },
             "22_modules_2_towers": {
                 "enabled": true,
-                "extra_capacity_kwh": 39.2,
-                "extra_power_kw": 6.72
+                "extra_capacity_kwh": 42.0,
+                "extra_power_kw": 8.96
             },
             "30_modules_2_towers": {
                 "enabled": true,
-                "extra_capacity_kwh": 61.6,
-                "extra_power_kw": 12.08
+                "extra_capacity_kwh": 64.4,
+                "extra_power_kw": 14.32
             }
         }
     }
